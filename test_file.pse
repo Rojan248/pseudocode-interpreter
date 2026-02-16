@@ -1,0 +1,15 @@
+DECLARE Line : STRING
+
+OPENFILE "data.txt" FOR WRITE
+WRITEFILE "data.txt", "Line 1 Content"
+WRITEFILE "data.txt", "Line 2 Content"
+CLOSEFILE "data.txt"
+
+OUTPUT "File written. Now reading..."
+
+OPENFILE "data.txt" FOR READ
+WHILE NOT EOF("data.txt")
+    READFILE "data.txt", Line
+    OUTPUT "Read:", Line
+ENDWHILE
+CLOSEFILE "data.txt"

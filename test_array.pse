@@ -1,0 +1,11 @@
+DECLARE Numbers : ARRAY[1:5] OF INTEGER
+DECLARE i : INTEGER
+
+FOR i <- 1 TO 5
+    Numbers[i] <- i * 10
+NEXT i
+
+OUTPUT "Array Content:"
+FOR i <- 1 TO 5
+    OUTPUT Numbers[i]
+NEXT i

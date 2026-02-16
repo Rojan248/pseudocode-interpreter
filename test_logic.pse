@@ -1,0 +1,166 @@
+// ============================================
+// Comprehensive Test: Logic Error Fixes
+// ============================================
+
+// --- TEST 1: DIV truncation toward zero ---
+OUTPUT "=== DIV Tests ==="
+OUTPUT "7 DIV 2 =", 7 DIV 2
+OUTPUT "-7 DIV 2 =", -7 DIV 2
+OUTPUT "7 DIV -2 =", 7 DIV -2
+
+// --- TEST 2: MOD consistent with DIV ---
+OUTPUT "=== MOD Tests ==="
+OUTPUT "7 MOD 2 =", 7 MOD 2
+OUTPUT "-7 MOD 2 =", -7 MOD 2
+OUTPUT "7 MOD -2 =", 7 MOD -2
+
+// --- TEST 3: AND/OR return booleans ---
+OUTPUT "=== AND/OR Tests ==="
+DECLARE a : INTEGER
+DECLARE b : INTEGER
+a <- 5
+b <- 3
+OUTPUT "5 AND 3 =", a > 0 AND b > 0
+OUTPUT "0 OR 5 =", a = 0 OR b > 0
+OUTPUT "TRUE AND FALSE =", TRUE AND FALSE
+OUTPUT "TRUE OR FALSE =", TRUE OR FALSE
+
+// --- TEST 4: Boolean OUTPUT formatting ---
+OUTPUT "=== Boolean Output ==="
+DECLARE flag : BOOLEAN
+flag <- TRUE
+OUTPUT "flag is:", flag
+OUTPUT "NOT flag is:", NOT flag
+OUTPUT "TRUE =", TRUE
+OUTPUT "FALSE =", FALSE
+
+// --- TEST 5: RIGHT(s, 0) edge case ---
+OUTPUT "=== RIGHT Tests ==="
+OUTPUT "RIGHT('Hello', 3):", RIGHT("Hello", 3)
+OUTPUT "RIGHT('Hello', 0):", RIGHT("Hello", 0)
+OUTPUT "RIGHT('Hello', 5):", RIGHT("Hello", 5)
+
+// --- TEST 6: CONSTANT with boolean ---
+OUTPUT "=== CONSTANT Tests ==="
+CONSTANT MaxVal = 100
+CONSTANT Pi = 3.14
+CONSTANT Greeting = "Hello"
+CONSTANT IsActive = TRUE
+OUTPUT "MaxVal:", MaxVal
+OUTPUT "Pi:", Pi
+OUTPUT "Greeting:", Greeting
+OUTPUT "IsActive:", IsActive
+
+// --- TEST 7: String concatenation (&) ---
+OUTPUT "=== String Concat ==="
+DECLARE firstName : STRING
+DECLARE lastName : STRING
+firstName <- "John"
+lastName <- "Doe"
+OUTPUT "Full name:", firstName & " " & lastName
+
+// --- TEST 8: Comparison operators ---
+OUTPUT "=== Comparisons ==="
+OUTPUT "5 <> 3:", 5 <> 3
+OUTPUT "5 <> 5:", 5 <> 5
+OUTPUT "3 <= 5:", 3 <= 5
+OUTPUT "5 <= 5:", 5 <= 5
+OUTPUT "6 <= 5:", 6 <= 5
+OUTPUT "5 >= 3:", 5 >= 3
+
+// --- TEST 9: FOR with STEP ---
+OUTPUT "=== FOR STEP ==="
+DECLARE i : INTEGER
+DECLARE result : STRING
+result <- ""
+FOR i <- 1 TO 10 STEP 2
+    result <- result & NUM_TO_STR(i) & " "
+NEXT i
+OUTPUT "Odds:", result
+
+// --- TEST 10: FOR with negative STEP ---
+result <- ""
+FOR i <- 10 TO 1 STEP -2
+    result <- result & NUM_TO_STR(i) & " "
+NEXT i
+OUTPUT "Countdown:", result
+
+// --- TEST 11: REPEAT...UNTIL ---
+OUTPUT "=== REPEAT UNTIL ==="
+DECLARE count : INTEGER
+count <- 0
+REPEAT
+    count <- count + 1
+UNTIL count >= 5
+OUTPUT "Count after repeat:", count
+
+// --- TEST 12: WHILE loop ---
+OUTPUT "=== WHILE ==="
+count <- 0
+WHILE count < 3 DO
+    count <- count + 1
+ENDWHILE
+OUTPUT "Count after while:", count
+
+// --- TEST 13: NOT operator ---
+OUTPUT "=== NOT ==="
+OUTPUT "NOT TRUE:", NOT TRUE
+OUTPUT "NOT FALSE:", NOT FALSE
+
+// --- TEST 14: FUNCTION with RETURN ---
+OUTPUT "=== FUNCTIONS ==="
+FUNCTION Square(BYVAL n : INTEGER) RETURNS INTEGER
+    RETURN n * n
+ENDFUNCTION
+
+FUNCTION Add(BYVAL x : INTEGER, BYVAL y : INTEGER) RETURNS INTEGER
+    RETURN x + y
+ENDFUNCTION
+
+OUTPUT "Square(7):", Square(7)
+OUTPUT "Add(3, 4):", Add(3, 4)
+
+// --- TEST 15: Recursive function ---
+FUNCTION Factorial(BYVAL n : INTEGER) RETURNS INTEGER
+    IF n <= 1 THEN
+        RETURN 1
+    ELSE
+        RETURN n * Factorial(n - 1)
+    ENDIF
+ENDFUNCTION
+
+OUTPUT "Factorial(5):", Factorial(5)
+OUTPUT "Factorial(0):", Factorial(0)
+
+// --- TEST 16: CASE OF ---
+OUTPUT "=== CASE OF ==="
+DECLARE grade : INTEGER
+grade <- 85
+CASE OF grade
+    90 : OUTPUT "Grade: A+"
+    85 : OUTPUT "Grade: A"
+    70 : OUTPUT "Grade: B"
+    OTHERWISE : OUTPUT "Grade: C or below"
+ENDCASE
+
+grade <- 50
+CASE OF grade
+    90 : OUTPUT "Grade: A+"
+    85 : OUTPUT "Grade: A"
+    70 : OUTPUT "Grade: B"
+    OTHERWISE : OUTPUT "Grade: Other"
+ENDCASE
+
+// --- TEST 17: Nested IF / ELSE ---
+OUTPUT "=== Nested IF ==="
+DECLARE x : INTEGER
+x <- 15
+IF x > 20 THEN
+    OUTPUT "Greater than 20"
+ELSE
+    IF x > 10 THEN
+        OUTPUT "Between 11 and 20"
+    ELSE
+        OUTPUT "10 or less"
+    ENDIF
+ENDIF

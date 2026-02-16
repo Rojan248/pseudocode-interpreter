@@ -1,0 +1,15 @@
+PROCEDURE Swap(BYREF A : INTEGER, BYREF B : INTEGER)
+    DECLARE Temp : INTEGER
+    Temp <- A
+    A <- B
+    B <- Temp
+ENDPROCEDURE
+
+DECLARE Val1 : INTEGER
+DECLARE Val2 : INTEGER
+Val1 <- 10
+Val2 <- 20
+
+OUTPUT "Before Swap:", Val1, Val2
+CALL Swap(Val1, Val2)
+OUTPUT "After Swap:", Val1, Val2

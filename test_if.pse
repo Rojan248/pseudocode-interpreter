@@ -1,0 +1,15 @@
+DECLARE X : INTEGER
+DECLARE Y : INTEGER
+X <- 10
+Y <- 20
+
+IF X > 5 THEN
+    OUTPUT "X is greater than 5"
+    IF Y > 10 THEN
+        OUTPUT "Y is greater than 10"
+    ELSE
+        OUTPUT "Y is smaller"
+    ENDIF
+ELSE
+    OUTPUT "X is smaller"
+ENDIF

@@ -1,0 +1,21 @@
+TYPE Student
+    Name : STRING
+    Age : INTEGER
+    GPA : REAL
+ENDTYPE
+
+DECLARE s1 : Student
+s1.Name <- "Alice"
+s1.Age <- 20
+s1.GPA <- 3.8
+
+OUTPUT "Student:", s1.Name
+OUTPUT "Age:", s1.Age
+OUTPUT "GPA:", s1.GPA
+
+DECLARE s2 : Student
+s2.Name <- "Bob"
+s2.Age <- 22
+
+OUTPUT "Student 2:", s2.Name
+OUTPUT "Age:", s2.Age

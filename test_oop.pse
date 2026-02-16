@@ -1,0 +1,38 @@
+// Test OOP features per 9618 Pseudocode Guide
+
+CLASS Animal
+    PRIVATE Name : STRING
+    PRIVATE Sound : STRING
+
+    PROCEDURE NEW(n : STRING, s : STRING)
+        Name <- n
+        Sound <- s
+    ENDPROCEDURE
+
+    FUNCTION GetName() RETURNS STRING
+        RETURN Name
+    ENDFUNCTION
+
+    FUNCTION Speak() RETURNS STRING
+        RETURN Name & " says " & Sound
+    ENDFUNCTION
+ENDCLASS
+
+CLASS Dog INHERITS Animal
+    PRIVATE Breed : STRING
+
+    PROCEDURE NEW(n : STRING, b : STRING)
+        SUPER.NEW(n, "Woof")
+        Breed <- b
+    ENDPROCEDURE
+
+    FUNCTION GetBreed() RETURNS STRING
+        RETURN Breed
+    ENDFUNCTION
+ENDCLASS
+
+DECLARE MyDog : Dog
+MyDog <- NEW Dog("Rex", "Labrador")
+OUTPUT MyDog.GetName()
+OUTPUT MyDog.Speak()
+OUTPUT MyDog.GetBreed()

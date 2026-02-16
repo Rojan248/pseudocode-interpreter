@@ -1,0 +1,10 @@
+DECLARE S : STRING
+S <- "Hello World"
+
+OUTPUT "Original:", S
+OUTPUT "Length:", LENGTH(S)
+OUTPUT "Upper:", UCASE(S)
+OUTPUT "Lower:", LCASE(S)
+OUTPUT "Left 5:", LEFT(S, 5)
+OUTPUT "Right 5:", RIGHT(S, 5)
+OUTPUT "Mid 2,3:", MID(S, 2, 3)

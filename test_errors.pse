@@ -1,0 +1,13 @@
+DECLARE X : INTEGER
+X <- 10
+
+OUTPUT "Starting..."
+
+IF X > 5 THEN
+    OUTPUT "X is fine"
+ENDIF
+
+DECLARE Arr : ARRAY[1:5] OF INTEGER
+Arr[6] <- 100  // Error: Index out of bounds (Line 10)
+
+OUTPUT "Should not reach here"
