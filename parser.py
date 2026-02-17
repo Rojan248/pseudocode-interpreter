@@ -2,6 +2,19 @@ from typing import List, Optional, Union
 from lexer import TokenType, Token, Lexer
 from ast_nodes import *
 
+# Precedence table for binary operators (Higher value = higher precedence)
+OPERATOR_PRECEDENCE = {
+    TokenType.OR: 10,
+    TokenType.AND: 20,
+    TokenType.NE: 30, TokenType.EQ: 30,
+    TokenType.LT: 30, TokenType.GT: 30,
+    TokenType.LE: 30, TokenType.GE: 30,
+    TokenType.PLUS: 40, TokenType.MINUS: 40,
+    TokenType.AMPER: 40,
+    TokenType.MULTIPLY: 50, TokenType.DIVIDE: 50,
+    TokenType.DIV: 50, TokenType.MOD: 50,
+}
+
 class ParserError(Exception):
     pass
 
@@ -39,17 +52,7 @@ class Parser:
         }
         
         # Precedence table for binary operators
-        self._precedence = {
-            TokenType.OR: 10,
-            TokenType.AND: 20,
-            TokenType.NE: 30, TokenType.EQ: 30, 
-            TokenType.LT: 30, TokenType.GT: 30,
-            TokenType.LE: 30, TokenType.GE: 30,
-            TokenType.PLUS: 40, TokenType.MINUS: 40,
-            TokenType.AMPER: 40,
-            TokenType.MULTIPLY: 50, TokenType.DIVIDE: 50,
-            TokenType.DIV: 50, TokenType.MOD: 50,
-        }
+        self._precedence = OPERATOR_PRECEDENCE.copy()
     
     def peek(self, offset: int = 0) -> Optional[Token]:
         idx = self.pos + offset
