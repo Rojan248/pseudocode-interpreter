@@ -53,76 +53,66 @@ class Cell:
     def set(self, new_value: Any, new_type: Optional[DataType] = None):
         if self.is_constant:
             raise ValueError(f"Cannot modify constant value (currently {self.value!r})")
-        
-        # Type compatibility checking
-        if new_type is not None and new_type != self.type:
-            # Allow INTEGER to REAL promotion (9618 rule)
-            if not (self.type == DataType.REAL and new_type == DataType.INTEGER):
-                raise TypeError(
-                    f"Type mismatch: cannot assign {new_type.name} to {self.type.name}"
-                )
-            # If promoting INTEGER to REAL, ensure value is float
-            if self.type == DataType.REAL and new_type == DataType.INTEGER:
-                new_value = float(new_value)
-        
+        new_value = self._check_type_compatibility(new_value, new_type)
         self.value = new_value
+
+    def _check_type_compatibility(self, value: Any, new_type: Optional[DataType]) -> Any:
+        """Validate type assignment rules and apply INT→REAL promotion."""
+        if new_type is None or new_type == self.type:
+            return value
+        if self._is_int_to_real_promotion(new_type):
+            return float(value)
+        raise TypeError(
+            f"Type mismatch: cannot assign {new_type.name} to {self.type.name}"
+        )
+
+    def _is_int_to_real_promotion(self, source_type: DataType) -> bool:
+        """Check if assignment is a valid INTEGER→REAL promotion."""
+        return self.type == DataType.REAL and source_type == DataType.INTEGER
     
     def get_array_element(self, indices: List[int]) -> 'Cell':
         """Multi-dimensional 1-based array access."""
-        if not self.is_array:
-            raise TypeError("Not an array type")
-        
-        bounds = self.array_bounds
-        if len(indices) != len(bounds.dims):
-            raise IndexError(f"Incorrect number of indices: expected {len(bounds.dims)}, got {len(indices)}")
-
-        for i, (idx, (lower, upper)) in enumerate(zip(indices, bounds.dims)):
-            if idx < lower or idx > upper:
-                raise IndexError(
-                    f"Array index {idx} out of bounds [{lower}:{upper}] for dimension {i+1}"
-                )
-        
-        # Convert list of indices to tuple for dict key
+        self._validate_array_indices(indices)
         key = tuple(indices)
-        
-        # Lazy initialization
         if key not in self.array_elements:
-            default = self._default_value(bounds.element_type)
-            self.array_elements[key] = Cell(default, bounds.element_type)
-        
+            default = self._default_value(self.array_bounds.element_type)
+            self.array_elements[key] = Cell(default, self.array_bounds.element_type)
         return self.array_elements[key]
     
     def set_array_element(self, indices: List[int], value: Any, val_type: DataType):
         """Multi-dimensional 1-based array assignment."""
+        self._validate_array_indices(indices)
+        value = self._coerce_element_type(value, val_type)
+        key = tuple(indices)
+        if key not in self.array_elements:
+            self.array_elements[key] = Cell(None, self.array_bounds.element_type)
+        self.array_elements[key].value = value
+
+    def _validate_array_indices(self, indices: List[int]):
+        """Validate that this is an array and indices are within bounds."""
         if not self.is_array:
             raise TypeError("Not an array type")
-        
         bounds = self.array_bounds
         if len(indices) != len(bounds.dims):
-            raise IndexError(f"Incorrect number of indices: expected {len(bounds.dims)}, got {len(indices)}")
-
+            raise IndexError(
+                f"Incorrect number of indices: expected {len(bounds.dims)}, got {len(indices)}"
+            )
         for i, (idx, (lower, upper)) in enumerate(zip(indices, bounds.dims)):
             if idx < lower or idx > upper:
                 raise IndexError(
                     f"Array index {idx} out of bounds [{lower}:{upper}] for dimension {i+1}"
                 )
-        
-        # Element type compatibility
-        if val_type != bounds.element_type:
-            if not (bounds.element_type == DataType.REAL and val_type == DataType.INTEGER):
-                raise TypeError(
-                    f"Array element type mismatch: expected {bounds.element_type.name}, "
-                    f"got {val_type.name}"
-                )
-            if bounds.element_type == DataType.REAL and val_type == DataType.INTEGER:
-                value = float(value)
-        
-        key = tuple(indices)
-        
-        if key not in self.array_elements:
-            self.array_elements[key] = Cell(None, bounds.element_type)
-        
-        self.array_elements[key].value = value
+
+    def _coerce_element_type(self, value: Any, val_type: DataType) -> Any:
+        """Check element type compatibility and apply INT→REAL promotion."""
+        expected = self.array_bounds.element_type
+        if val_type == expected:
+            return value
+        if expected == DataType.REAL and val_type == DataType.INTEGER:
+            return float(value)
+        raise TypeError(
+            f"Array element type mismatch: expected {expected.name}, got {val_type.name}"
+        )
 
     def _default_value(self, dtype: DataType) -> Any:
         return self._DEFAULTS.get(dtype)
@@ -149,6 +139,19 @@ class Cell:
             )
         
         return Cell(deepcopy(self.value), self.type, is_constant=False)
+
+@dataclass
+class DeclarationSpec:
+    """Encapsulates all parameters for a variable declaration."""
+    name: str
+    dtype: DataType
+    is_constant: bool = False
+    constant_value: Any = None
+    is_array: bool = False
+    array_bounds: Optional[ArrayBounds] = None
+    initial_value: Any = None
+    line: int = 0
+
 
 @dataclass
 class SymbolInfo:
@@ -198,41 +201,60 @@ class SymbolTable:
                 array_bounds: Optional[ArrayBounds] = None,
                 initial_value: Any = None,
                 line: int = 0) -> Cell:
-        current_scope = self.scopes[self.scope_level]
-        
-        if name in current_scope:
-            raise NameError(
-                f"Variable '{name}' already declared in current scope at line {line}"
-            )
-        
-        # Create appropriate Cell based on declaration kind
-        if is_constant:
-            if constant_value is None:
-                raise ValueError("Constant declaration requires initial value")
-            cell = Cell(constant_value, dtype, is_constant=True)
-        
-        elif is_array:
-            cell = Cell(
-                value=None, type=DataType.ARRAY,
-                is_array=True, array_bounds=array_bounds
-            )
-        
-        else:  # Scalar variable (or Record)
-            if initial_value is not None:
-                initial = initial_value
-            else:
-                initial = Cell(None, dtype)._default_value(dtype)
-            cell = Cell(initial, dtype)
-        
-        # Record symbol information
-        sym = SymbolInfo(
-            name=name,
-            cell=cell,
-            scope_level=self.scope_level,
-            declared_line=line
+        """Declare a variable, constant, or array in the current scope."""
+        spec = DeclarationSpec(
+            name=name, dtype=dtype, is_constant=is_constant,
+            constant_value=constant_value, is_array=is_array,
+            array_bounds=array_bounds, initial_value=initial_value, line=line
         )
-        current_scope[name] = sym
+        return self._declare_from_spec(spec)
+
+    def _declare_from_spec(self, spec: DeclarationSpec) -> Cell:
+        """Internal declaration using a DeclarationSpec."""
+        current_scope = self.scopes[self.scope_level]
+        if spec.name in current_scope:
+            raise NameError(
+                f"Variable '{spec.name}' already declared in current scope at line {spec.line}"
+            )
+        cell = self._create_cell(spec)
+        sym = SymbolInfo(
+            name=spec.name, cell=cell,
+            scope_level=self.scope_level, declared_line=spec.line
+        )
+        current_scope[spec.name] = sym
         return cell
+
+    def _create_cell(self, spec: DeclarationSpec) -> Cell:
+        """Create the appropriate Cell based on declaration kind."""
+        if spec.is_constant:
+            return self._create_constant_cell(spec)
+        if spec.is_array:
+            return self._create_array_cell(spec)
+        return self._create_scalar_cell(spec)
+
+    @staticmethod
+    def _create_constant_cell(spec: DeclarationSpec) -> Cell:
+        """Create a Cell for a CONSTANT declaration."""
+        if spec.constant_value is None:
+            raise ValueError("Constant declaration requires initial value")
+        return Cell(spec.constant_value, spec.dtype, is_constant=True)
+
+    @staticmethod
+    def _create_array_cell(spec: DeclarationSpec) -> Cell:
+        """Create a Cell for an ARRAY declaration."""
+        return Cell(
+            value=None, type=DataType.ARRAY,
+            is_array=True, array_bounds=spec.array_bounds
+        )
+
+    @staticmethod
+    def _create_scalar_cell(spec: DeclarationSpec) -> Cell:
+        """Create a Cell for a scalar variable or record."""
+        if spec.initial_value is not None:
+            initial = spec.initial_value
+        else:
+            initial = Cell(None, spec.dtype)._default_value(spec.dtype)
+        return Cell(initial, spec.dtype)
     
     def lookup(self, name: str) -> Optional[SymbolInfo]:
         """Search for symbol from innermost to outermost scope."""
@@ -254,32 +276,31 @@ class SymbolTable:
                          line: int = 0) -> Cell:
         """Parameter declaration with BYREF (shared Cell) or BYVAL (copied Cell)."""
         current_scope = self.scopes[self.scope_level]
-        
         if name in current_scope:
             raise NameError(f"Parameter '{name}' already declared")
-        
-        if param_mode == 'BYREF':
-            if caller_cell is None:
-                raise ValueError("BYREF parameter requires caller's Cell")
-            cell = caller_cell
-        
-        else:  # BYVAL
-            if caller_cell is not None:
-                cell = caller_cell.copy_value()
-            else:
-                initial = Cell(None, dtype)._default_value(dtype)
-                cell = Cell(initial, dtype)
-        
+        cell = self._create_param_cell(dtype, param_mode, caller_cell)
         sym = SymbolInfo(
-            name=name,
-            cell=cell,
+            name=name, cell=cell,
             scope_level=self.scope_level,
-            is_parameter=True,
-            param_mode=param_mode,
+            is_parameter=True, param_mode=param_mode,
             declared_line=line
         )
         current_scope[name] = sym
         return cell
+
+    @staticmethod
+    def _create_param_cell(dtype: DataType, param_mode: str,
+                           caller_cell: Optional[Cell]) -> Cell:
+        """Create a Cell for a parameter based on passing mode."""
+        if param_mode == 'BYREF':
+            if caller_cell is None:
+                raise ValueError("BYREF parameter requires caller's Cell")
+            return caller_cell
+        # BYVAL: copy or create fresh
+        if caller_cell is not None:
+            return caller_cell.copy_value()
+        initial = Cell(None, dtype)._default_value(dtype)
+        return Cell(initial, dtype)
     
     def assign(self, name: str, value: Any, val_type: DataType, line: int = 0):
         """Assignment: name <- value with type checking."""
