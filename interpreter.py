@@ -41,6 +41,52 @@ class Interpreter:
         self.classes = {}
         self.current_object = None
         self.current_line = 0
+        self._init_dispatch_tables()
+
+    def _init_dispatch_tables(self):
+        self._stmt_visitors = {
+            DeclareStmt: self.visit_DeclareStmt,
+            ConstantDecl: self.visit_ConstantDecl,
+            AssignStmt: self.visit_AssignStmt,
+            InputStmt: self.visit_InputStmt,
+            OutputStmt: self.visit_OutputStmt,
+            IfStmt: self.visit_IfStmt,
+            CaseStmt: self.visit_CaseStmt,
+            WhileStmt: self.visit_WhileStmt,
+            RepeatStmt: self.visit_RepeatStmt,
+            ForStmt: self.visit_ForStmt,
+            ProcedureDecl: self.visit_ProcedureDecl,
+            FunctionDecl: self.visit_FunctionDecl,
+            ProcedureCallStmt: self.visit_ProcedureCallStmt,
+            ReturnStmt: self.visit_ReturnStmt,
+            TypeDecl: self.visit_TypeDecl,
+            ClassDecl: self.visit_ClassDecl,
+            FileStmt: self.visit_FileStmt,
+            # Handle expression statements
+            CallExpr: self.evaluate,
+            MethodCallExpr: self.evaluate,
+            SuperExpr: self.evaluate,
+            BinaryExpr: self.evaluate,
+            UnaryExpr: self.evaluate,
+            LiteralExpr: self.evaluate,
+            VariableExpr: self.evaluate,
+            ArrayAccessExpr: self.evaluate,
+            MemberExpr: self.evaluate,
+            NewExpr: self.evaluate,
+        }
+
+        self._expr_evaluators = {
+            LiteralExpr: self.evaluate_LiteralExpr,
+            VariableExpr: self.evaluate_VariableExpr,
+            ArrayAccessExpr: self.evaluate_ArrayAccessExpr,
+            MemberExpr: self.evaluate_MemberExpr,
+            BinaryExpr: self.evaluate_BinaryExpr,
+            UnaryExpr: self.evaluate_UnaryExpr,
+            CallExpr: self.evaluate_CallExpr,
+            MethodCallExpr: self.evaluate_MethodCallExpr,
+            NewExpr: self.evaluate_NewExpr,
+            SuperExpr: self.evaluate_SuperExpr,
+        }
 
     def interpret(self, statements: List[Stmt]):
         for stmt in statements:
@@ -50,21 +96,24 @@ class Interpreter:
         if hasattr(stmt, 'line') and stmt.line > 0:
             self.current_line = stmt.line
         
-        # Handle expression-statements (e.g., SUPER.Method() as a statement)
+        visitor = self._stmt_visitors.get(type(stmt))
+        if visitor:
+            return visitor(stmt)
+
+        # Fallback for expression statements not in map (if any)
         if isinstance(stmt, Expr):
             return self.evaluate(stmt)
-            
-        method_name = f"visit_{type(stmt).__name__}"
-        method = getattr(self, method_name, self.no_visit_method)
-        return method(stmt)
+
+        return self.no_visit_method(stmt)
 
     def no_visit_method(self, node):
         raise InterpreterError(f"No visit method for {type(node).__name__}")
 
     def evaluate(self, expr: Expr) -> Any:
-        method_name = f"evaluate_{type(expr).__name__}"
-        method = getattr(self, method_name, self.no_eval_method)
-        return method(expr)
+        evaluator = self._expr_evaluators.get(type(expr))
+        if evaluator:
+            return evaluator(expr)
+        return self.no_eval_method(expr)
 
     def no_eval_method(self, node):
         raise InterpreterError(f"No evaluate method for {type(node).__name__}")
