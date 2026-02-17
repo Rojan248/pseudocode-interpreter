@@ -1,0 +1,37 @@
+OUTPUT "--- Operator Precedence Tests ---"
+
+OUTPUT "1. Multiply vs Add (2 + 3 * 4):"
+OUTPUT "Expected: 14", 2 + 3 * 4
+
+OUTPUT "2. Add vs Multiply with parens ((2 + 3) * 4):"
+OUTPUT "Expected: 20", (2 + 3) * 4
+
+OUTPUT "3. AND vs OR (TRUE OR FALSE AND FALSE):"
+OUTPUT "Expected: TRUE", TRUE OR FALSE AND FALSE
+
+OUTPUT "4. AND vs OR with parens ((TRUE OR FALSE) AND FALSE):"
+OUTPUT "Expected: FALSE", (TRUE OR FALSE) AND FALSE
+
+OUTPUT "5. Comparison vs Logic (5 > 3 AND 2 < 4):"
+OUTPUT "Expected: TRUE", 5 > 3 AND 2 < 4
+
+OUTPUT "6. Comparison vs Logic (5 > 3 OR 2 > 4):"
+OUTPUT "Expected: TRUE", 5 > 3 OR 2 > 4
+
+OUTPUT "7. Arithmetic vs Comparison (2 + 3 > 4):"
+OUTPUT "Expected: TRUE", 2 + 3 > 4
+
+OUTPUT "8. Arithmetic vs Comparison (2 + 3 < 4):"
+OUTPUT "Expected: FALSE", 2 + 3 < 4
+
+OUTPUT "9. Unary NOT vs AND (NOT TRUE AND FALSE):"
+OUTPUT "Expected: FALSE", NOT TRUE AND FALSE
+
+OUTPUT "10. Unary NOT vs OR (NOT TRUE OR TRUE):"
+OUTPUT "Expected: TRUE", NOT TRUE OR TRUE
+
+OUTPUT "11. Unary Minus vs Multiply (-3 * 4):"
+OUTPUT "Expected: -12", -3 * 4
+
+OUTPUT "12. Unary Minus vs Power/Add (not applicable but checking -3 + 4):"
+OUTPUT "Expected: 1", -3 + 4
