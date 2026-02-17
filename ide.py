@@ -374,14 +374,6 @@ class DryRunSetupDialog(ctk.CTkToplevel):
         self.var_checkboxes = {}
 
         self._build_ui()
-
-        # Keyboard shortcuts
-        self.bind("<Escape>", lambda e: self._cancel())
-        for entry in self.input_entries:
-            entry.bind("<Return>", self._submit)
-        if self.bulk_entry:
-            self.bulk_entry.bind("<Return>", self._submit)
-
         self.protocol("WM_DELETE_WINDOW", self._cancel)
         self.wait_window()
 
@@ -585,7 +577,6 @@ class TraceTableWindow(ctk.CTkToplevel):
         self.interp = interpreter
         self._build_ui()
         self._populate()
-        self.bind("<Escape>", lambda e: self.destroy())
 
     def _build_ui(self):
         # ── Top info bar ──

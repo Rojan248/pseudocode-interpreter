@@ -2,7 +2,8 @@ import sys
 import os
 from lexer import Lexer, TokenType
 from parser import Parser, ParserError
-from interpreter import Interpreter, InterpreterError, DryRunInterpreter
+from interpreter import Interpreter, InterpreterError
+from dry_run_interpreter import DryRunInterpreter
 from symbol_table import SymbolTable
 
 def run_file(filename, dry_run=False, inputs=None):
