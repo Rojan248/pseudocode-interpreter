@@ -231,28 +231,35 @@ class Parser:
         otherwise = None
         
         while self.current and not self.check(TokenType.ENDCASE):
-            if self.match(TokenType.OTHERWISE):
-                self.expect(TokenType.COLON)
-                otherwise = []
-                while self.current and not self.check(TokenType.ENDCASE):
-                    stmt = self.parse_statement()
-                    if stmt: otherwise.append(stmt)
+            if self.check(TokenType.OTHERWISE):
+                otherwise = self.parse_otherwise_branch()
                 break
             
-            # Case labels
-            values = self.parse_case_labels()
-            self.expect(TokenType.COLON)
-            stmts = []
-            # Parse statements until next start of case or ENDCASE/OTHERWISE
-            # Use heuristic from blueprint
-            while self.current and not self.check(TokenType.ENDCASE, TokenType.OTHERWISE) and not self.is_case_label_start():
-                stmt = self.parse_statement()
-                if stmt: stmts.append(stmt)
-            
-            branches.append(CaseBranch(values, stmts))
+            branches.append(self.parse_case_branch())
             
         self.expect(TokenType.ENDCASE)
         return CaseStmt(selector, branches, otherwise)
+
+    def parse_otherwise_branch(self) -> List[Stmt]:
+        """Parses the OTHERWISE block: OTHERWISE : <statements>"""
+        self.expect(TokenType.OTHERWISE)
+        self.expect(TokenType.COLON)
+        stmts = []
+        while self.current and not self.check(TokenType.ENDCASE):
+            stmt = self.parse_statement()
+            if stmt: stmts.append(stmt)
+        return stmts
+
+    def parse_case_branch(self) -> CaseBranch:
+        """Parses a single CASE branch: <labels> : <statements>"""
+        values = self.parse_case_labels()
+        self.expect(TokenType.COLON)
+        stmts = []
+        # Parse statements until next start of case or ENDCASE/OTHERWISE
+        while self.current and not self.check(TokenType.ENDCASE, TokenType.OTHERWISE) and not self.is_case_label_start():
+            stmt = self.parse_statement()
+            if stmt: stmts.append(stmt)
+        return CaseBranch(values, stmts)
 
     def is_case_label_start(self) -> bool:
         if self.check(TokenType.INTEGER, TokenType.STRING, TokenType.CHAR_LITERAL, TokenType.BOOLEAN):
