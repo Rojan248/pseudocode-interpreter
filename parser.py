@@ -15,6 +15,19 @@ OPERATOR_PRECEDENCE = {
     TokenType.DIV: 50, TokenType.MOD: 50,
 }
 
+# Token types that can start a return value expression
+_RETURN_EXPR_TOKENS = frozenset({
+    TokenType.INTEGER, TokenType.REAL, TokenType.STRING,
+    TokenType.CHAR_LITERAL, TokenType.BOOLEAN, TokenType.IDENTIFIER,
+    TokenType.LPAREN, TokenType.MINUS, TokenType.NOT,
+})
+
+# Token types that mark the end of a return context
+_RETURN_END_TOKENS = frozenset({
+    TokenType.EOF, TokenType.ENDPROCEDURE, TokenType.ENDFUNCTION,
+})
+
+
 class ParserError(Exception):
     pass
 
@@ -49,6 +62,17 @@ class Parser:
             TokenType.SEEK: self.parse_file_stmt,
             TokenType.GETRECORD: self.parse_file_stmt,
             TokenType.PUTRECORD: self.parse_file_stmt,
+        }
+        
+        # File operation dispatch: TokenType → handler method
+        self._file_dispatch = {
+            TokenType.OPENFILE: self._parse_open_file,
+            TokenType.READFILE: self._parse_read_file,
+            TokenType.WRITEFILE: self._parse_write_file,
+            TokenType.CLOSEFILE: self._parse_close_file,
+            TokenType.SEEK: self._parse_seek_file,
+            TokenType.GETRECORD: self._parse_getrecord_file,
+            TokenType.PUTRECORD: self._parse_putrecord_file,
         }
         
         # Precedence table for binary operators
@@ -86,15 +110,42 @@ class Parser:
     def check(self, *token_types: TokenType) -> bool:
         return self.current is not None and self.current.type in token_types
 
+    # ── Shared parsing helpers ──
+
+    def _has_more_tokens(self) -> bool:
+        """Check if there are more non-EOF tokens to parse."""
+        return self.current is not None and self.current.type != TokenType.EOF
+
+    def _parse_block_until(self, *end_tokens: TokenType) -> List[Stmt]:
+        """Parse statements until one of the given token types is encountered."""
+        stmts = []
+        while self.current and not self.check(*end_tokens):
+            stmt = self.parse_statement()
+            if stmt:
+                stmts.append(stmt)
+        return stmts
+
+    def _parse_optional_params(self) -> List['Param']:
+        """Parse an optional parenthesized parameter list."""
+        if not self.match(TokenType.LPAREN):
+            return []
+        if self.check(TokenType.RPAREN):
+            self.expect(TokenType.RPAREN)
+            return []
+        params = self.parse_params()
+        self.expect(TokenType.RPAREN)
+        return params
+
+    # ── Top-level parsing ──
+
     def parse(self) -> List[Stmt]:
         statements = []
-        while self.current and self.current.type != TokenType.EOF:
+        while self._has_more_tokens():
             stmt = self.parse_statement()
             if stmt:
                 statements.append(stmt)
-            else:
-                 if self.current:
-                     raise ParserError(f"Unexpected token at top level: {self.current}")
+            elif self.current:
+                raise ParserError(f"Unexpected token at top level: {self.current}")
         return statements
 
     def parse_statement(self) -> Optional[Stmt]:
@@ -190,40 +241,37 @@ class Parser:
         
         while self.current and self.check(TokenType.LBRACKET, TokenType.DOT):
             if self.match(TokenType.LBRACKET):
-                indices = [self.parse_expression()]
-                while self.match(TokenType.COMMA):
-                    indices.append(self.parse_expression())
-                self.expect(TokenType.RBRACKET)
-                if isinstance(expr, str):
-                    expr = ArrayAccessExpr(expr, indices)
-                else:
-                    raise ParserError("Complex array indexing on expressions not fully supported yet")
+                expr = self._parse_lvalue_index(expr)
             elif self.match(TokenType.DOT):
-                field = self.expect(TokenType.IDENTIFIER).value
                 base = VariableExpr(expr) if isinstance(expr, str) else expr
-                expr = MemberExpr(base, field)
+                expr = MemberExpr(base, self.expect(TokenType.IDENTIFIER).value)
         
         return expr
+
+    def _parse_lvalue_index(self, expr) -> ArrayAccessExpr:
+        """Parse array index access in an l-value context (LBRACKET already consumed)."""
+        indices = [self.parse_expression()]
+        while self.match(TokenType.COMMA):
+            indices.append(self.parse_expression())
+        self.expect(TokenType.RBRACKET)
+        if isinstance(expr, str):
+            return ArrayAccessExpr(expr, indices)
+        raise ParserError("Complex array indexing on expressions not fully supported yet")
 
     def parse_if(self) -> IfStmt:
         self.expect(TokenType.IF)
         condition = self.parse_expression()
         self.expect(TokenType.THEN)
-        
-        then_branch = []
-        while self.current and not self.check(TokenType.ELSE, TokenType.ENDIF):
-            stmt = self.parse_statement()
-            if stmt: then_branch.append(stmt)
-        
-        else_branch = None
-        if self.match(TokenType.ELSE):
-            else_branch = []
-            while self.current and not self.check(TokenType.ENDIF):
-                stmt = self.parse_statement()
-                if stmt: else_branch.append(stmt)
-        
+        then_branch = self._parse_block_until(TokenType.ELSE, TokenType.ENDIF)
+        else_branch = self._parse_else_branch()
         self.expect(TokenType.ENDIF)
         return IfStmt(condition, then_branch, else_branch)
+
+    def _parse_else_branch(self) -> Optional[List[Stmt]]:
+        """Parse the optional ELSE branch of an IF statement."""
+        if not self.match(TokenType.ELSE):
+            return None
+        return self._parse_block_until(TokenType.ENDIF)
 
     def parse_case(self) -> CaseStmt:
         self.expect(TokenType.CASE)
@@ -247,37 +295,44 @@ class Parser:
         """Parses the OTHERWISE block: OTHERWISE : <statements>"""
         self.expect(TokenType.OTHERWISE)
         self.expect(TokenType.COLON)
-        stmts = []
-        while self.current and not self.check(TokenType.ENDCASE):
-            stmt = self.parse_statement()
-            if stmt: stmts.append(stmt)
-        return stmts
+        return self._parse_block_until(TokenType.ENDCASE)
 
     def parse_case_branch(self) -> CaseBranch:
         """Parses a single CASE branch: <labels> : <statements>"""
         values = self.parse_case_labels()
         self.expect(TokenType.COLON)
         stmts = []
-        # Parse statements until next start of case or ENDCASE/OTHERWISE
-        while self.current and not self.check(TokenType.ENDCASE, TokenType.OTHERWISE) and not self.is_case_label_start():
+        while self.current and not self._at_case_branch_end():
             stmt = self.parse_statement()
             if stmt: stmts.append(stmt)
         return CaseBranch(values, stmts)
 
+    def _at_case_branch_end(self) -> bool:
+        """Check if we've reached the end of a CASE branch."""
+        return self.check(TokenType.ENDCASE, TokenType.OTHERWISE) or self.is_case_label_start()
+
     def is_case_label_start(self) -> bool:
         if self.check(TokenType.INTEGER, TokenType.STRING, TokenType.CHAR_LITERAL, TokenType.BOOLEAN):
             return True
-        # Negative literal: e.g. -3 : <statement>
-        if self.check(TokenType.MINUS):
-            nxt = self.peek(1)
-            if nxt and nxt.type == TokenType.INTEGER:
-                return True
-        if self.check(TokenType.IDENTIFIER):
-            # Lookahead for colon or TO
-            nxt = self.peek(1)
-            if nxt and nxt.type in (TokenType.COLON, TokenType.TO, TokenType.COMMA):
-                return True
+        if self._is_negative_literal_start():
+            return True
+        if self._is_identifier_label_start():
+            return True
         return False
+
+    def _is_negative_literal_start(self) -> bool:
+        """Check for a negative literal like -3 at the start of a case label."""
+        if not self.check(TokenType.MINUS):
+            return False
+        nxt = self.peek(1)
+        return nxt is not None and nxt.type == TokenType.INTEGER
+
+    def _is_identifier_label_start(self) -> bool:
+        """Check for an identifier followed by a label separator (COLON, TO, COMMA)."""
+        if not self.check(TokenType.IDENTIFIER):
+            return False
+        nxt = self.peek(1)
+        return nxt is not None and nxt.type in (TokenType.COLON, TokenType.TO, TokenType.COMMA)
 
     def parse_case_labels(self) -> List[Expr]:
         labels = []
@@ -298,20 +353,13 @@ class Parser:
         self.expect(TokenType.WHILE)
         condition = self.parse_expression()
         self.match(TokenType.DO)  # Optional DO keyword
-            
-        body = []
-        while self.current and not self.check(TokenType.ENDWHILE):
-            stmt = self.parse_statement()
-            if stmt: body.append(stmt)
+        body = self._parse_block_until(TokenType.ENDWHILE)
         self.expect(TokenType.ENDWHILE)
         return WhileStmt(condition, body)
 
     def parse_repeat(self) -> RepeatStmt:
         self.expect(TokenType.REPEAT)
-        body = []
-        while self.current and not self.check(TokenType.UNTIL):
-            stmt = self.parse_statement()
-            if stmt: body.append(stmt)
+        body = self._parse_block_until(TokenType.UNTIL)
         self.expect(TokenType.UNTIL)
         condition = self.parse_expression()
         return RepeatStmt(body, condition)
@@ -323,26 +371,26 @@ class Parser:
         start = self.parse_expression()
         self.expect(TokenType.TO)
         end = self.parse_expression()
-        
-        step = None
-        if self.match(TokenType.STEP):
-            step = self.parse_expression()
-            
-        body = []
-        while self.current and not self.check(TokenType.NEXT):
-            stmt = self.parse_statement()
-            if stmt: body.append(stmt)
-            
+        step = self._parse_optional_step()
+        body = self._parse_block_until(TokenType.NEXT)
         self.expect(TokenType.NEXT)
-        # Optional variable name after NEXT — must match the loop variable
-        if self.check(TokenType.IDENTIFIER):
-             next_var = self.advance().value
-             if next_var != name:
-                 raise ParserError(
-                     f"NEXT variable '{next_var}' does not match FOR variable '{name}'"
-                 )
-             
+        self._validate_next_variable(name)
         return ForStmt(name, start, end, step, body)
+
+    def _parse_optional_step(self) -> Optional[Expr]:
+        """Parse an optional STEP clause in a FOR loop."""
+        if self.match(TokenType.STEP):
+            return self.parse_expression()
+        return None
+
+    def _validate_next_variable(self, loop_var: str):
+        """Validate that the variable after NEXT matches the FOR loop variable."""
+        if self.check(TokenType.IDENTIFIER):
+            next_var = self.advance().value
+            if next_var != loop_var:
+                raise ParserError(
+                    f"NEXT variable '{next_var}' does not match FOR variable '{loop_var}'"
+                )
 
     def parse_call_stmt(self):
         self.expect(TokenType.CALL)
@@ -385,39 +433,13 @@ class Parser:
 
     def parse_primary(self) -> Expr:
         if self.match(TokenType.LPAREN):
-            expr = self.parse_expression()
-            self.expect(TokenType.RPAREN)
-            return expr
+            return self._parse_grouped_expr()
         
         if self.check(TokenType.INTEGER, TokenType.REAL, TokenType.STRING, TokenType.CHAR_LITERAL, TokenType.BOOLEAN):
             return LiteralExpr(self.advance().value)
             
         if self.check(TokenType.IDENTIFIER):
-            expr = VariableExpr(self.advance().value)
-            
-            while True:
-                if self.match(TokenType.LBRACKET):
-                    indices = [self.parse_expression()]
-                    while self.match(TokenType.COMMA):
-                        indices.append(self.parse_expression())
-                    self.expect(TokenType.RBRACKET)
-                    if isinstance(expr, VariableExpr):
-                        expr = ArrayAccessExpr(expr.name, indices)
-                    else:
-                        raise ParserError("Complex array indexing on expressions not supported yet")
-                elif self.match(TokenType.DOT):
-                    expr = MemberExpr(expr, self.expect(TokenType.IDENTIFIER).value)
-                elif self.match(TokenType.LPAREN):
-                    args = self._parse_arglist()
-                    if isinstance(expr, VariableExpr):
-                        expr = CallExpr(expr.name, args)
-                    elif isinstance(expr, MemberExpr):
-                        expr = MethodCallExpr(expr.record, expr.field, args)
-                    else:
-                        raise ParserError("Complex call not supported")
-                else:
-                    break
-            return expr
+            return self._parse_identifier_expr()
             
         if self.match(TokenType.NOT):
             return UnaryExpr("NOT", self.parse_primary())
@@ -426,63 +448,95 @@ class Parser:
             return UnaryExpr("-", self.parse_primary())
 
         if self.match(TokenType.NEW):
-            class_name = self.expect(TokenType.IDENTIFIER).value
-            args = self._parse_arglist() if self.match(TokenType.LPAREN) else []
-            if args or not self.check(TokenType.RPAREN):
-                pass  # args already parsed or no parens
-            return NewExpr(class_name, args)
+            return self._parse_new_expr()
 
         if self.match(TokenType.SUPER):
-            self.expect(TokenType.DOT)
-            method_name = self.advance().value if self.check(TokenType.NEW) else self.expect(TokenType.IDENTIFIER).value
-            args = self._parse_arglist() if self.match(TokenType.LPAREN) else []
-            return SuperExpr(method_name, args)
+            return self._parse_super_expr()
 
         raise ParserError(f"Unexpected token in expression: {self.current}")
+
+    def _parse_grouped_expr(self) -> Expr:
+        """Parse a parenthesized expression (LPAREN already consumed)."""
+        expr = self.parse_expression()
+        self.expect(TokenType.RPAREN)
+        return expr
+
+    def _parse_identifier_expr(self) -> Expr:
+        """Parse an identifier and any chained access (array, dot, call)."""
+        expr = VariableExpr(self.advance().value)
+        return self._parse_chained_access(expr)
+
+    def _parse_chained_access(self, expr: Expr) -> Expr:
+        """Parse chained array access, member access, and call expressions."""
+        while True:
+            if self.match(TokenType.LBRACKET):
+                expr = self._parse_array_access(expr)
+            elif self.match(TokenType.DOT):
+                expr = MemberExpr(expr, self.expect(TokenType.IDENTIFIER).value)
+            elif self.match(TokenType.LPAREN):
+                expr = self._parse_call_from_expr(expr)
+            else:
+                break
+        return expr
+
+    def _parse_array_access(self, expr: Expr) -> ArrayAccessExpr:
+        """Parse array index access (LBRACKET already consumed)."""
+        indices = [self.parse_expression()]
+        while self.match(TokenType.COMMA):
+            indices.append(self.parse_expression())
+        self.expect(TokenType.RBRACKET)
+        if isinstance(expr, VariableExpr):
+            return ArrayAccessExpr(expr.name, indices)
+        raise ParserError("Complex array indexing on expressions not supported yet")
+
+    def _parse_call_from_expr(self, expr: Expr) -> Expr:
+        """Parse a function/method call (LPAREN already consumed)."""
+        args = self._parse_arglist()
+        if isinstance(expr, VariableExpr):
+            return CallExpr(expr.name, args)
+        if isinstance(expr, MemberExpr):
+            return MethodCallExpr(expr.record, expr.field, args)
+        raise ParserError("Complex call not supported")
+
+    def _parse_new_expr(self) -> NewExpr:
+        """Parse a NEW class instantiation expression."""
+        class_name = self.expect(TokenType.IDENTIFIER).value
+        args = self._parse_arglist() if self.match(TokenType.LPAREN) else []
+        return NewExpr(class_name, args)
+
+    def _parse_super_expr(self) -> SuperExpr:
+        """Parse a SUPER.method() call expression."""
+        self.expect(TokenType.DOT)
+        method_name = self.advance().value if self.check(TokenType.NEW) else self.expect(TokenType.IDENTIFIER).value
+        args = self._parse_arglist() if self.match(TokenType.LPAREN) else []
+        return SuperExpr(method_name, args)
 
     def _get_precedence(self, type_: TokenType) -> int:
         return self._precedence.get(type_, -1)
     
     def parse_procedure_decl(self) -> ProcedureDecl:
         self.expect(TokenType.PROCEDURE)
-        # Allow NEW as procedure name (constructor in classes)
-        if self.check(TokenType.NEW):
-            name = self.advance().value
-        else:
-            name = self.expect(TokenType.IDENTIFIER).value
-        params = []
-        if self.match(TokenType.LPAREN):
-            if not self.check(TokenType.RPAREN):
-                params = self.parse_params()
-            self.expect(TokenType.RPAREN)
-            
-        body = []
-        while self.current and not self.check(TokenType.ENDPROCEDURE):
-             stmt = self.parse_statement()
-             if stmt: body.append(stmt)
+        name = self._parse_callable_name()
+        params = self._parse_optional_params()
+        body = self._parse_block_until(TokenType.ENDPROCEDURE)
         self.expect(TokenType.ENDPROCEDURE)
         return ProcedureDecl(name, params, body)
 
     def parse_function_decl(self) -> FunctionDecl:
         self.expect(TokenType.FUNCTION)
         name = self.expect(TokenType.IDENTIFIER).value
-        params = []
-        if self.match(TokenType.LPAREN):
-            if not self.check(TokenType.RPAREN):
-                params = self.parse_params()
-            self.expect(TokenType.RPAREN)
-        
+        params = self._parse_optional_params()
         self.expect(TokenType.RETURNS)
-        # Type
-        type_tok = self.advance() # Should be type
-        return_type = type_tok.value
-        
-        body = []
-        while self.current and not self.check(TokenType.ENDFUNCTION):
-             stmt = self.parse_statement()
-             if stmt: body.append(stmt)
+        return_type = self.advance().value
+        body = self._parse_block_until(TokenType.ENDFUNCTION)
         self.expect(TokenType.ENDFUNCTION)
         return FunctionDecl(name, params, return_type, body)
+
+    def _parse_callable_name(self) -> str:
+        """Parse a procedure/function name, allowing NEW for constructors."""
+        if self.check(TokenType.NEW):
+            return self.advance().value
+        return self.expect(TokenType.IDENTIFIER).value
 
     def parse_params(self) -> List[Param]:
         params = []
@@ -509,18 +563,17 @@ class Parser:
 
     def parse_return(self) -> Stmt:
         self.expect(TokenType.RETURN)
-        # Check if there's an expression following RETURN
-        # Bare RETURN (no value) is valid in procedures
-        if (self.current and self.current.type not in (
-            TokenType.EOF, TokenType.ENDPROCEDURE, TokenType.ENDFUNCTION
-        ) and self.current.type in (
-            TokenType.INTEGER, TokenType.REAL, TokenType.STRING,
-            TokenType.CHAR_LITERAL, TokenType.BOOLEAN, TokenType.IDENTIFIER,
-            TokenType.LPAREN, TokenType.MINUS, TokenType.NOT
-        )):
-            expr = self.parse_expression()
-            return ReturnStmt(expr)
+        if self._has_return_expression():
+            return ReturnStmt(self.parse_expression())
         return ReturnStmt(None)
+
+    def _has_return_expression(self) -> bool:
+        """Check if a RETURN statement is followed by a return value expression."""
+        if not self.current:
+            return False
+        if self.current.type in _RETURN_END_TOKENS:
+            return False
+        return self.current.type in _RETURN_EXPR_TOKENS
 
     def _parse_file_args(self, with_comma=True):
         """Parse filename and optional comma-separated second argument."""
@@ -530,42 +583,53 @@ class Parser:
         return filename_expr
 
     def parse_file_stmt(self) -> FileStmt:
-        if self.match(TokenType.OPENFILE):
-            filename_expr = self.parse_primary()
-            self.expect(TokenType.FOR)
-            mode_map = {
-                TokenType.READ_MODE: "READ", TokenType.WRITE_MODE: "WRITE",
-                TokenType.APPEND_MODE: "APPEND", TokenType.RANDOM_MODE: "RANDOM",
-            }
-            for tok_type, mode_str in mode_map.items():
-                if self.match(tok_type):
-                    return FileStmt("OPEN", filename_expr, mode=mode_str)
-            raise ParserError("Expected READ, WRITE, APPEND, or RANDOM after FOR")
-        
-        if self.match(TokenType.READFILE):
-            fn = self._parse_file_args()
-            return FileStmt("READ", fn, variable=self.expect(TokenType.IDENTIFIER).value)
-        
-        if self.match(TokenType.WRITEFILE):
-            fn = self._parse_file_args()
-            return FileStmt("WRITE", fn, data=self.parse_expression())
-        
-        if self.match(TokenType.CLOSEFILE):
-            return FileStmt("CLOSE", self.parse_primary())
-        
-        if self.match(TokenType.SEEK):
-            fn = self._parse_file_args()
-            return FileStmt("SEEK", fn, data=self.parse_expression())
-        
-        if self.match(TokenType.GETRECORD):
-            fn = self._parse_file_args()
-            return FileStmt("GETRECORD", fn, variable=self.expect(TokenType.IDENTIFIER).value)
-        
-        if self.match(TokenType.PUTRECORD):
-            fn = self._parse_file_args()
-            return FileStmt("PUTRECORD", fn, variable=self.expect(TokenType.IDENTIFIER).value)
-        
+        handler = self._file_dispatch.get(self.current.type)
+        if handler:
+            self.advance()
+            return handler()
         raise ParserError(f"Unexpected file operation at {self.current}")
+
+    def _parse_open_file(self) -> FileStmt:
+        """Parse OPENFILE <filename> FOR <mode>."""
+        filename_expr = self.parse_primary()
+        self.expect(TokenType.FOR)
+        mode_map = {
+            TokenType.READ_MODE: "READ", TokenType.WRITE_MODE: "WRITE",
+            TokenType.APPEND_MODE: "APPEND", TokenType.RANDOM_MODE: "RANDOM",
+        }
+        for tok_type, mode_str in mode_map.items():
+            if self.match(tok_type):
+                return FileStmt("OPEN", filename_expr, mode=mode_str)
+        raise ParserError("Expected READ, WRITE, APPEND, or RANDOM after FOR")
+
+    def _parse_read_file(self) -> FileStmt:
+        """Parse READFILE <filename>, <variable>."""
+        fn = self._parse_file_args()
+        return FileStmt("READ", fn, variable=self.expect(TokenType.IDENTIFIER).value)
+
+    def _parse_write_file(self) -> FileStmt:
+        """Parse WRITEFILE <filename>, <expression>."""
+        fn = self._parse_file_args()
+        return FileStmt("WRITE", fn, data=self.parse_expression())
+
+    def _parse_close_file(self) -> FileStmt:
+        """Parse CLOSEFILE <filename>."""
+        return FileStmt("CLOSE", self.parse_primary())
+
+    def _parse_seek_file(self) -> FileStmt:
+        """Parse SEEK <filename>, <position>."""
+        fn = self._parse_file_args()
+        return FileStmt("SEEK", fn, data=self.parse_expression())
+
+    def _parse_getrecord_file(self) -> FileStmt:
+        """Parse GETRECORD <filename>, <variable>."""
+        fn = self._parse_file_args()
+        return FileStmt("GETRECORD", fn, variable=self.expect(TokenType.IDENTIFIER).value)
+
+    def _parse_putrecord_file(self) -> FileStmt:
+        """Parse PUTRECORD <filename>, <variable>."""
+        fn = self._parse_file_args()
+        return FileStmt("PUTRECORD", fn, variable=self.expect(TokenType.IDENTIFIER).value)
 
     def parse_class_decl(self) -> 'ClassDecl':
         """
@@ -576,64 +640,90 @@ class Parser:
         """
         self.expect(TokenType.CLASS)
         name = self.expect(TokenType.IDENTIFIER).value
-        
-        parent = None
-        if self.match(TokenType.INHERITS):
-            parent = self.expect(TokenType.IDENTIFIER).value
-        
-        members = []
-        while self.current and not self.check(TokenType.ENDCLASS):
-            # Optional access modifier
-            access = None
-            if self.match(TokenType.PUBLIC):
-                access = "PUBLIC"
-            elif self.match(TokenType.PRIVATE):
-                access = "PRIVATE"
-            
-            # Check if this is a bare field declaration: <Name> : <Type>
-            # (i.e. no DECLARE keyword, just IDENTIFIER followed by COLON)
-            if self.check(TokenType.IDENTIFIER) and self.peek(1) and self.peek(1).type == TokenType.COLON:
-                field_name = self.advance().value
-                self.expect(TokenType.COLON)
-                type_tok = self.advance()
-                type_name = type_tok.value
-                member = DeclareStmt(field_name, type_name)
-            else:
-                member = self.parse_statement()
-            
-            if member:
-                # Attach access modifier as attribute
-                member.access = access if access else "PUBLIC"
-                members.append(member)
-        
+        parent = self._parse_optional_inheritance()
+        members = self._parse_class_body()
         self.expect(TokenType.ENDCLASS)
         return ClassDecl(name, parent, members)
+
+    def _parse_optional_inheritance(self) -> Optional[str]:
+        """Parse an optional INHERITS clause."""
+        if self.match(TokenType.INHERITS):
+            return self.expect(TokenType.IDENTIFIER).value
+        return None
+
+    def _parse_class_body(self) -> list:
+        """Parse all class members until ENDCLASS."""
+        members = []
+        while self.current and not self.check(TokenType.ENDCLASS):
+            member = self._parse_class_member()
+            if member:
+                members.append(member)
+        return members
+
+    def _parse_class_member(self):
+        """Parse a single class member with optional access modifier."""
+        access = self._parse_access_modifier()
+        
+        if self._is_bare_field_declaration():
+            member = self._parse_bare_field()
+        else:
+            member = self.parse_statement()
+        
+        if member:
+            member.access = access
+        return member
+
+    def _parse_access_modifier(self) -> str:
+        """Parse an optional PUBLIC/PRIVATE access modifier, defaulting to PUBLIC."""
+        if self.match(TokenType.PUBLIC):
+            return "PUBLIC"
+        if self.match(TokenType.PRIVATE):
+            return "PRIVATE"
+        return "PUBLIC"
+
+    def _is_bare_field_declaration(self) -> bool:
+        """Check if current position is a bare field: IDENTIFIER COLON TYPE (no DECLARE)."""
+        if not self.check(TokenType.IDENTIFIER):
+            return False
+        nxt = self.peek(1)
+        return nxt is not None and nxt.type == TokenType.COLON
+
+    def _parse_bare_field(self) -> DeclareStmt:
+        """Parse a bare field declaration: <name> : <type>."""
+        field_name = self.advance().value
+        self.expect(TokenType.COLON)
+        type_name = self.advance().value
+        return DeclareStmt(field_name, type_name)
 
     def parse_type_decl(self) -> TypeDecl:
         self.expect(TokenType.TYPE)
         name = self.expect(TokenType.IDENTIFIER).value
 
-        # Check for enumerated type: TYPE Season = (Spring, Summer, Autumn, Winter)
         if self.match(TokenType.EQ):
-            if self.match(TokenType.LPAREN):
-                values = []
-                values.append(self.expect(TokenType.IDENTIFIER).value)
-                while self.match(TokenType.COMMA):
-                    values.append(self.expect(TokenType.IDENTIFIER).value)
-                self.expect(TokenType.RPAREN)
-                return TypeDecl(name, [], enum_values=values)
-            else:
-                raise ParserError(f"Expected '(' after '=' in TYPE declaration")
+            return self._parse_enum_type(name)
 
-        # Record type: fields use DECLARE keyword per 9618 spec
+        fields = self._parse_record_fields()
+        self.expect(TokenType.ENDTYPE)
+        return TypeDecl(name, fields)
+
+    def _parse_enum_type(self, name: str) -> TypeDecl:
+        """Parse an enumerated type: TYPE name = (Value1, Value2, ...)"""
+        if not self.match(TokenType.LPAREN):
+            raise ParserError(f"Expected '(' after '=' in TYPE declaration")
+        values = [self.expect(TokenType.IDENTIFIER).value]
+        while self.match(TokenType.COMMA):
+            values.append(self.expect(TokenType.IDENTIFIER).value)
+        self.expect(TokenType.RPAREN)
+        return TypeDecl(name, [], enum_values=values)
+
+    def _parse_record_fields(self) -> list:
+        """Parse record type fields until ENDTYPE."""
         fields = []
         while self.current and not self.check(TokenType.ENDTYPE):
-            # 9618 spec requires DECLARE before each field
-            self.match(TokenType.DECLARE)  # consume DECLARE if present (also accept without for backwards compat)
+            self.match(TokenType.DECLARE)  # consume DECLARE if present
             field_name = self.expect(TokenType.IDENTIFIER).value
             self.expect(TokenType.COLON)
             type_tok = self.advance()
             fields.append((field_name, type_tok.value))
-        self.expect(TokenType.ENDTYPE)
-        return TypeDecl(name, fields)
+        return fields
 
