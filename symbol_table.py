@@ -251,6 +251,7 @@ class SymbolTable:
     def declare_parameter(self, name: str, dtype: DataType,
                          param_mode: str,
                          caller_cell: Optional[Cell] = None,
+                         initial_value: Any = None,
                          line: int = 0) -> Cell:
         """Parameter declaration with BYREF (shared Cell) or BYVAL (copied Cell)."""
         current_scope = self.scopes[self.scope_level]
@@ -266,6 +267,8 @@ class SymbolTable:
         else:  # BYVAL
             if caller_cell is not None:
                 cell = caller_cell.copy_value()
+            elif initial_value is not None:
+                cell = Cell(initial_value, dtype)
             else:
                 initial = Cell(None, dtype)._default_value(dtype)
                 cell = Cell(initial, dtype)

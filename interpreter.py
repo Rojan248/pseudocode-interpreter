@@ -377,16 +377,7 @@ class Interpreter:
                 if arg['mode'] == 'BYREF':
                     self.symbol_table.declare_parameter(arg['name'], dtype, "BYREF", caller_cell=arg['cell'])
                 else:
-                    # BYVAL: Create new cell with value
-                    # Hack: declare_parameter expecting caller_cell for BYREF, but for BYVAL it creates valid COPY.
-                    # But we have raw value here. We need to create a temporary cell or modify logic.
-                    # SymbolTable.declare_parameter logic: if BYVAL and caller_cell is None -> init default.
-                    # But we WANT to init with value.
-                    # Let's declare normally and assign? No, declare_parameter is for params.
-                    # Let's modify SymbolTable to accept initial value for BYVAL? 
-                    # OR just create a temp cell here.
-                    temp_cell = Cell(arg['value'], dtype)
-                    self.symbol_table.declare_parameter(arg['name'], dtype, "BYVAL", caller_cell=temp_cell)
+                    self.symbol_table.declare_parameter(arg['name'], dtype, "BYVAL", initial_value=arg['value'])
 
             # 4. Execute body
             for s in decl.body:
@@ -474,10 +465,28 @@ class Interpreter:
 
     def _call_method(self, obj, method_decl, arg_exprs):
         """Call a method on an object, binding 'self' attributes to scope."""
-        args = arg_exprs
-        if len(args) != len(method_decl.params):
+        if len(arg_exprs) != len(method_decl.params):
             raise TypeError(f"Argument count mismatch for {method_decl.name}")
-        
+
+        # 1. Evaluate arguments (for BYVAL) or resolve references (for BYREF)
+        evaluated_args = []
+        for i, param in enumerate(method_decl.params):
+            arg_expr = arg_exprs[i]
+            if param.mode == "BYREF":
+                if not isinstance(arg_expr, (VariableExpr, ArrayAccessExpr)):
+                    raise TypeError(f"BYREF argument for {param.name} must be a variable")
+
+                if isinstance(arg_expr, VariableExpr):
+                    cell = self.symbol_table.get_cell(arg_expr.name)
+                else: # ArrayAccess
+                    indices = [self.evaluate(idx) for idx in arg_expr.indices]
+                    cell = self.symbol_table.array_access(arg_expr.array, indices)
+
+                evaluated_args.append({'mode': 'BYREF', 'cell': cell, 'name': param.name, 'type': param.type_name})
+            else:
+                val = self.evaluate(arg_expr)
+                evaluated_args.append({'mode': 'BYVAL', 'value': val, 'name': param.name, 'type': param.type_name})
+
         self.symbol_table.enter_scope()
         old_obj = self.current_object
         self.current_object = obj
@@ -492,14 +501,15 @@ class Interpreter:
                 )
                 self.symbol_table.scopes[self.symbol_table.scope_level][attr_name] = sym
             
-            # Bind parameters
-            for i, param in enumerate(method_decl.params):
-                val = self.evaluate(args[i])
-                dtype = self.symbol_table.resolve_type(param.type_name)
-                temp_cell = Cell(val, dtype)
-                self.symbol_table.declare_parameter(param.name, dtype, param.mode, caller_cell=temp_cell)
+            # 2. Bind parameters
+            for arg in evaluated_args:
+                dtype = self.symbol_table.resolve_type(arg['type'])
+                if arg['mode'] == 'BYREF':
+                    self.symbol_table.declare_parameter(arg['name'], dtype, "BYREF", caller_cell=arg['cell'])
+                else:
+                    self.symbol_table.declare_parameter(arg['name'], dtype, "BYVAL", initial_value=arg['value'])
             
-            # Execute method body
+            # 3. Execute method body
             for s in method_decl.body:
                 self.execute(s)
         except ReturnException as e:
