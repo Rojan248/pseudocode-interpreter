@@ -496,7 +496,7 @@ class Interpreter:
                 scope_level=self.symbol_table.scope_level,
                 is_parameter=False
             )
-            self.symbol_table.scopes[self.symbol_table.scope_level][attr_name] = sym
+            self.symbol_table.inject_symbol(sym)
 
     def evaluate_SuperExpr(self, expr):
         """SUPER.Method(args) — call parent class method."""

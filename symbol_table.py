@@ -180,7 +180,9 @@ class SymbolTable:
         self.scopes: List[Dict[str, SymbolInfo]] = [{}]
         self.scope_level: int = 0
         self.type_aliases: Dict[str, DataType] = {}  # TYPE definitions
-    
+        # Fast lookup cache: name -> stack of SymbolInfo (most recent at end)
+        self._lookup_cache: Dict[str, List[SymbolInfo]] = {}
+
     def enter_scope(self):
         """Enter new scope for procedure/function body."""
         self.scope_level += 1
@@ -190,6 +192,15 @@ class SymbolTable:
         """Exit current scope, cleaning up local variables."""
         if self.scope_level == 0:
             raise RuntimeError("Cannot exit global scope")
+
+        # Cleanup lookup cache for variables in the scope being removed
+        current_scope = self.scopes[self.scope_level]
+        for name in current_scope:
+            if name in self._lookup_cache:
+                self._lookup_cache[name].pop()
+                if not self._lookup_cache[name]:
+                    del self._lookup_cache[name]
+
         self.scopes.pop()
         self.scope_level -= 1
     
@@ -222,6 +233,12 @@ class SymbolTable:
             scope_level=self.scope_level, declared_line=spec.line
         )
         current_scope[spec.name] = sym
+
+        # Update lookup cache
+        if spec.name not in self._lookup_cache:
+            self._lookup_cache[spec.name] = []
+        self._lookup_cache[spec.name].append(sym)
+
         return cell
 
     def _create_cell(self, spec: DeclarationSpec) -> Cell:
@@ -258,9 +275,9 @@ class SymbolTable:
     
     def lookup(self, name: str) -> Optional[SymbolInfo]:
         """Search for symbol from innermost to outermost scope."""
-        for scope in reversed(self.scopes):
-            if name in scope:
-                return scope[name]
+        # O(1) Lookup Cache
+        if name in self._lookup_cache and self._lookup_cache[name]:
+            return self._lookup_cache[name][-1]
         return None
     
     def get_cell(self, name: str) -> Cell:
@@ -286,7 +303,24 @@ class SymbolTable:
             declared_line=line
         )
         current_scope[name] = sym
+
+        # Update lookup cache
+        if name not in self._lookup_cache:
+            self._lookup_cache[name] = []
+        self._lookup_cache[name].append(sym)
+
         return cell
+
+    def inject_symbol(self, sym: SymbolInfo):
+        """
+        Manually inject a symbol into the current scope (e.g. for object attributes).
+        Updates both the scope dictionary and the fast lookup cache.
+        """
+        self.scopes[self.scope_level][sym.name] = sym
+
+        if sym.name not in self._lookup_cache:
+            self._lookup_cache[sym.name] = []
+        self._lookup_cache[sym.name].append(sym)
 
     @staticmethod
     def _create_param_cell(dtype: DataType, param_mode: str,
