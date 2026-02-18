@@ -529,8 +529,17 @@ class Interpreter:
         method = parent_def['methods'][method_name]
         return self._call_method(obj, method, expr.arguments)
 
+    def _get_safe_path(self, filename: str) -> str:
+        """Resolve filename and ensure it stays within the current working directory."""
+        base_dir = os.path.realpath(os.getcwd())
+        target_path = os.path.realpath(os.path.join(base_dir, filename))
+        if os.path.commonpath([base_dir]) != os.path.commonpath([base_dir, target_path]):
+            raise InterpreterError(f"Access to file '{filename}' is denied (path traversal detected)")
+        return target_path
+
     def visit_FileStmt(self, stmt: FileStmt):
-        filename = str(self.evaluate(stmt.filename))
+        raw_filename = str(self.evaluate(stmt.filename))
+        filename = self._get_safe_path(raw_filename)
 
         if stmt.operation == "OPEN":
             mode_map = {"READ": "r", "WRITE": "w", "APPEND": "a"}
@@ -542,8 +551,8 @@ class Interpreter:
                     self.open_files[filename + "__mode"] = "RANDOM"
                 else:
                     self.open_files[filename] = open(filename, mode_map.get(stmt.mode, "r"))
-            except IOError as e:
-                raise InterpreterError(f"Failed to open file {filename}: {e}")
+            except (IOError, InterpreterError) as e:
+                raise InterpreterError(f"Failed to open file {raw_filename}: {e}")
 
         elif stmt.operation == "CLOSE":
             if filename in self.open_files:
@@ -605,7 +614,7 @@ class Interpreter:
         if name == 'SQRT': return math.sqrt(float(args[0]))
         if name == 'RAND': return random.random() * float(args[0])
         if name == 'EOF':
-            filename = str(args[0])
+            filename = self._get_safe_path(str(args[0]))
             if filename not in self.open_files:
                 return True
             f = self.open_files[filename]
