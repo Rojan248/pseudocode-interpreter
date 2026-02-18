@@ -172,7 +172,7 @@ class Lexer:
         # Keywords and identifiers
         ('IDENTIFIER', r'[A-Za-z_][A-Za-z0-9_]*'),
     ]
-    
+
     KEYWORDS = {
         'DECLARE': TokenType.DECLARE,
         'CONSTANT': TokenType.CONSTANT,
@@ -251,13 +251,16 @@ class Lexer:
         self.line = 1                   
         self.column = 1                 
         self.tokens = []                
-        self._regex = self._compile_master_regex()
     
-    def _compile_master_regex(self):
-        pattern_parts = [f'(?P<{name}>{regex})' for name, regex in self.TOKEN_SPECS]
-        combined_pattern = '|'.join(pattern_parts)
-        return re.compile(combined_pattern, re.MULTILINE)
-    
+    @property
+    def _regex(self):
+        cls = self.__class__
+        if '_MASTER_REGEX' not in cls.__dict__:
+            pattern_parts = [f'(?P<{name}>{regex})' for name, regex in cls.TOKEN_SPECS]
+            combined_pattern = '|'.join(pattern_parts)
+            cls._MASTER_REGEX = re.compile(combined_pattern, re.MULTILINE)
+        return cls._MASTER_REGEX
+
     def _update_position(self, text):
         newlines = text.count('\n')
         if newlines:
