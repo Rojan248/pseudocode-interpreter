@@ -390,9 +390,8 @@ class Interpreter:
                 self.symbol_table.declare_parameter(arg['name'], dtype, "BYREF",
                                                     caller_cell=arg['cell'])
             else:
-                temp_cell = Cell(arg['value'], dtype)
                 self.symbol_table.declare_parameter(arg['name'], dtype, "BYVAL",
-                                                    caller_cell=temp_cell)
+                                                    initial_value=arg['value'])
 
     # ── Type Declarations ──
 
@@ -476,9 +475,13 @@ class Interpreter:
             for i, param in enumerate(method_decl.params):
                 val = self.evaluate(arg_exprs[i])
                 dtype = self.symbol_table.resolve_type(param.type_name)
-                temp_cell = Cell(val, dtype)
-                self.symbol_table.declare_parameter(param.name, dtype,
-                                                    param.mode, caller_cell=temp_cell)
+                if param.mode == 'BYREF':
+                    temp_cell = Cell(val, dtype)
+                    self.symbol_table.declare_parameter(param.name, dtype,
+                                                        param.mode, caller_cell=temp_cell)
+                else:
+                    self.symbol_table.declare_parameter(param.name, dtype,
+                                                        param.mode, initial_value=val)
             for s in method_decl.body:
                 self.execute(s)
         except ReturnException as e:

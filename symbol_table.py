@@ -138,6 +138,11 @@ class Cell:
                 array_elements=new_elements
             )
         
+        # Optimization: Avoid deepcopy for immutable primitive types
+        if self.type in (DataType.INTEGER, DataType.REAL, DataType.STRING,
+                         DataType.BOOLEAN, DataType.CHAR, DataType.DATE, DataType.UNKNOWN):
+            return Cell(self.value, self.type, is_constant=False)
+
         return Cell(deepcopy(self.value), self.type, is_constant=False)
 
 @dataclass
@@ -290,12 +295,13 @@ class SymbolTable:
     def declare_parameter(self, name: str, dtype: DataType,
                          param_mode: str,
                          caller_cell: Optional[Cell] = None,
+                         initial_value: Any = None,
                          line: int = 0) -> Cell:
         """Parameter declaration with BYREF (shared Cell) or BYVAL (copied Cell)."""
         current_scope = self.scopes[self.scope_level]
         if name in current_scope:
             raise NameError(f"Parameter '{name}' already declared")
-        cell = self._create_param_cell(dtype, param_mode, caller_cell)
+        cell = self._create_param_cell(dtype, param_mode, caller_cell, initial_value)
         sym = SymbolInfo(
             name=name, cell=cell,
             scope_level=self.scope_level,
@@ -324,7 +330,8 @@ class SymbolTable:
 
     @staticmethod
     def _create_param_cell(dtype: DataType, param_mode: str,
-                           caller_cell: Optional[Cell]) -> Cell:
+                           caller_cell: Optional[Cell],
+                           initial_value: Any) -> Cell:
         """Create a Cell for a parameter based on passing mode."""
         if param_mode == 'BYREF':
             if caller_cell is None:
@@ -333,6 +340,15 @@ class SymbolTable:
         # BYVAL: copy or create fresh
         if caller_cell is not None:
             return caller_cell.copy_value()
+
+        # Optimization: use provided initial value for BYVAL
+        if initial_value is not None:
+            if dtype in (DataType.INTEGER, DataType.REAL, DataType.STRING,
+                         DataType.BOOLEAN, DataType.CHAR, DataType.DATE, DataType.UNKNOWN):
+                return Cell(initial_value, dtype)
+            # Mutable types (ARRAY, RECORD) must be deepcopied for BYVAL
+            return Cell(deepcopy(initial_value), dtype)
+
         initial = Cell(None, dtype)._default_value(dtype)
         return Cell(initial, dtype)
     
