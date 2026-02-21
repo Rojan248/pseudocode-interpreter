@@ -16,7 +16,8 @@ import re
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from lexer import Lexer, LexerError
 from parser import Parser, ParserError
-from interpreter import Interpreter, InterpreterError, DryRunInterpreter
+from interpreter import Interpreter, InterpreterError
+from dry_run_interpreter import DryRunInterpreter
 from symbol_table import SymbolTable
 
 # ── CustomTkinter global setup ──
@@ -460,7 +461,21 @@ class DryRunSetupDialog(ctk.CTkToplevel):
 
         ctk.CTkLabel(
             var_card,
-            text="Select which variables to show in the trace table:",
+            text="Define specific columns (comma-separated expressions) to match exam style:",
+            font=("Segoe UI", 9), text_color=COLORS["subtext"],
+        ).pack(anchor="w", padx=14, pady=(0, 6))
+
+        self.custom_cols_entry = ctk.CTkEntry(
+            var_card, font=("Cascadia Code", 11),
+            fg_color=COLORS["bg"], text_color=COLORS["text"],
+            border_color=COLORS["overlay"], corner_radius=6, height=32,
+            placeholder_text="e.g. I, Key, J, Chars[J], Count + 1",
+        )
+        self.custom_cols_entry.pack(fill="x", padx=14, pady=(0, 10))
+
+        ctk.CTkLabel(
+            var_card,
+            text="Or select from detected variables (if custom columns are empty):",
             font=("Segoe UI", 9), text_color=COLORS["subtext"],
         ).pack(anchor="w", padx=14, pady=(0, 6))
 
@@ -535,24 +550,46 @@ class DryRunSetupDialog(ctk.CTkToplevel):
 
     def _submit(self, _event=None):
         inputs = []
-        if self.bulk_entry:
-            bulk = self.bulk_entry.get().strip()
-            if bulk:
-                for v in bulk.split(","):
-                    v = v.strip()
-                    if v:
-                        inputs.append(v)
+        if self.bulk_entry: # Use self.bulk_entry directly if it exists, otherwise skip
+            try:
+                bulk = self.bulk_entry.get().strip()
+                if bulk:
+                    # simplistic CSV parsing
+                    for v in bulk.split(","):
+                        v = v.strip()
+                        if v:
+                            inputs.append(v)
+            except Exception:
+                pass # safely ignore if bulk_entry is None or error
+        
+        # If no bulk inputs, read individual fields
         if not inputs and self.input_entries:
             for entry in self.input_entries:
                 inputs.append(entry.get().strip())
 
+        # Check for custom columns
+        custom_cols = self.custom_cols_entry.get().strip()
+        trace_columns = None
         traced_vars = None
-        if not self.select_all_var.get():
-            traced_vars = set()
-            for name, bv in self.var_checkboxes.items():
-                if bv.get():
-                    traced_vars.add(name)
-        self.result = {'inputs': inputs, 'traced_vars': traced_vars}
+
+        if custom_cols:
+            # User defined specific columns (expressions included)
+            trace_columns = [
+                c.strip() for c in custom_cols.split(',') if c.strip()
+            ]
+        else:
+            # Use checkbox selection
+            if not self.select_all_var.get():
+                traced_vars = set()
+                for name, bv in self.var_checkboxes.items():
+                    if bv.get():
+                        traced_vars.add(name)
+        
+        self.result = {
+            'inputs': inputs, 
+            'traced_vars': traced_vars,
+            'trace_columns': trace_columns
+        }
         self.destroy()
 
     def _cancel(self):
@@ -565,11 +602,18 @@ class DryRunSetupDialog(ctk.CTkToplevel):
 # ═══════════════════════════════════════════════════════
 
 class TraceTableWindow(ctk.CTkToplevel):
-    """Displays the dry-run trace table in A-Level exam format."""
+    """Displays the dry-run trace table in Cambridge 9618 exam format.
+    
+    Key features matching exam paper style:
+    - Array elements expanded into individual columns (e.g. Chars[1], Chars[2])
+    - Values only shown when they change
+    - DECLARE/definition steps filtered out
+    - Clean column headers without Step/Statement/Note clutter
+    """
 
     def __init__(self, parent, interpreter):
         super().__init__(parent)
-        self.title("Trace Table — Dry Run Result")
+        self.title("Trace Table — Cambridge 9618 Exam Format")
         self.configure(fg_color=COLORS["bg_tertiary"])
         self.geometry("1020x620")
         self.minsize(700, 400)
@@ -584,14 +628,15 @@ class TraceTableWindow(ctk.CTkToplevel):
         top.pack(fill="x")
         top.pack_propagate(False)
 
-        steps = len(self.interp.trace)
+        # Count execution steps (skip declares/definitions)
+        exec_steps = len(self.interp.get_cambridge_trace())
         vc = len(self.interp.get_all_var_names())
         used = self.interp.input_index
 
         ctk.CTkLabel(
             top,
-            text=f"  Trace Table  │  {steps} steps  │  "
-                 f"{vc} variables  │  {used} inputs consumed",
+            text=f"  Trace Table  │  {exec_steps} steps  │  "
+                 f"{vc} columns  │  {used} inputs consumed",
             font=("Segoe UI", 11, "bold"), text_color=COLORS["accent"],
         ).pack(side="left", padx=8)
 
@@ -639,7 +684,7 @@ class TraceTableWindow(ctk.CTkToplevel):
         yscroll.pack(side="right", fill="y")
 
         var_names = self.interp.get_all_var_names()
-        columns = ['step', 'line', 'statement', 'note'] + var_names
+        columns = ['line'] + var_names
 
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings",
                                  style="Trace.Treeview",
@@ -649,17 +694,16 @@ class TraceTableWindow(ctk.CTkToplevel):
         xscroll.configure(command=self.tree.xview)
         yscroll.configure(command=self.tree.yview)
 
-        self.tree.heading('step', text='Step')
-        self.tree.column('step', width=55, minwidth=40, anchor='center')
+        # Line column
         self.tree.heading('line', text='Line')
         self.tree.column('line', width=55, minwidth=40, anchor='center')
-        self.tree.heading('statement', text='Statement')
-        self.tree.column('statement', width=200, minwidth=100)
-        self.tree.heading('note', text='Note')
-        self.tree.column('note', width=200, minwidth=80)
+        
+        # Variable columns — Cambridge style
         for vn in var_names:
             self.tree.heading(vn, text=vn)
-            self.tree.column(vn, width=120, minwidth=60, anchor='center')
+            # Narrower columns for array elements, wider for scalars
+            width = 80 if '[' in vn else 100
+            self.tree.column(vn, width=width, minwidth=50, anchor='center')
 
         self.tree.tag_configure('even', background=COLORS["bg"])
         self.tree.tag_configure('odd', background=COLORS["bg_secondary"])
@@ -686,27 +730,44 @@ class TraceTableWindow(ctk.CTkToplevel):
         if isinstance(val, bool):
             return "TRUE" if val else "FALSE"
         if isinstance(val, str):
+            if len(val) == 1:
+                return f"'{val}'"
             return val
         if isinstance(val, dict):
             return str(val)
         return str(val)
 
     def _populate(self):
+        """Populate the trace table in Cambridge exam format.
+        Only shows values when they change from the previous row.
+        Skips DECLARE/definition steps.
+        """
         var_names = self.interp.get_all_var_names()
-        for i, entry in enumerate(self.interp.trace):
-            values = [entry['step'], entry['line'],
-                      entry['statement'], entry['note']]
+        prev_values = {}  # Track previous formatted value per column
+        row_idx = 0
+        
+        for entry in self.interp.trace:
+            # Skip DECLARE and definition steps
+            if entry.get('is_declare') or entry.get('is_definition'):
+                continue
+                
+            values = [entry['line']]
             for vn in var_names:
-                val = entry['variables'].get(vn, '')
-                if isinstance(val, dict):
-                    val = str(val)
-                elif val == '':
-                    val = ''
+                val = entry['variables'].get(vn, None)
+                if val is None:
+                    values.append('')
                 else:
-                    val = self._fmt(val)
-                values.append(val)
-            tag = 'even' if i % 2 == 0 else 'odd'
+                    formatted = self._fmt(val)
+                    prev = prev_values.get(vn)
+                    if prev is None or prev != formatted:
+                        values.append(formatted)
+                        prev_values[vn] = formatted
+                    else:
+                        values.append('')  # Unchanged — leave blank
+            
+            tag = 'even' if row_idx % 2 == 0 else 'odd'
             self.tree.insert('', 'end', values=values, tags=(tag,))
+            row_idx += 1
 
     def _export(self):
         path = filedialog.asksaveasfilename(
@@ -727,15 +788,25 @@ class TraceTableWindow(ctk.CTkToplevel):
 
     def _export_csv(self, path):
         var_names = self.interp.get_all_var_names()
-        headers = ['Step', 'Line', 'Statement', 'Note'] + var_names
+        headers = ['Line'] + var_names
+        cambridge_trace = self.interp.get_cambridge_trace()
+        prev_values = {}
         with open(path, 'w', encoding='utf-8') as f:
             f.write(','.join(headers) + '\n')
-            for entry in self.interp.trace:
-                row = [str(entry['step']), str(entry['line']),
-                       f'"{ entry["statement"] }"', f'"{ entry["note"] }"']
+            for entry in cambridge_trace:
+                row = [str(entry['line'])]
                 for vn in var_names:
-                    val = entry['variables'].get(vn, '')
-                    row.append(f'"{self._fmt(val)}"')
+                    val = entry['variables'].get(vn, None)
+                    if val is None:
+                        row.append('')
+                    else:
+                        formatted = self._fmt(val)
+                        prev = prev_values.get(vn)
+                        if prev is None or prev != formatted:
+                            row.append(f'"{formatted}"')
+                            prev_values[vn] = formatted
+                        else:
+                            row.append('')
                 f.write(','.join(row) + '\n')
         messagebox.showinfo("Export", f"Exported to:\n{path}", parent=self)
 
@@ -1211,6 +1282,7 @@ class PseudocodeIDE:
             symbol_table,
             input_queue=setup['inputs'],
             traced_vars=setup['traced_vars'],
+            trace_columns=setup.get('trace_columns') # Pass custom columns
         )
 
         old_stdout = sys.stdout
