@@ -120,9 +120,9 @@ class Parser:
         """Parse statements until one of the given token types is encountered."""
         stmts = []
         while self.current and not self.check(*end_tokens):
-            stmt = self.parse_statement()
-            if stmt:
-                stmts.append(stmt)
+            new_stmts = self.parse_statement()
+            if new_stmts:
+                stmts.extend(new_stmts)
         return stmts
 
     def _parse_optional_params(self) -> List['Param']:
@@ -141,38 +141,45 @@ class Parser:
     def parse(self) -> List[Stmt]:
         statements = []
         while self._has_more_tokens():
-            stmt = self.parse_statement()
-            if stmt:
-                statements.append(stmt)
+            new_stmts = self.parse_statement()
+            if new_stmts:
+                statements.extend(new_stmts)
             elif self.current:
                 raise ParserError(f"Unexpected token at top level: {self.current}")
         return statements
 
-    def parse_statement(self) -> Optional[Stmt]:
+    def parse_statement(self) -> List[Stmt]:
         if not self.current:
-            return None
+            return []
             
         line = self.current.line
-        stmt = None
+        stmts = []
         
         # Dispatch table lookup
         handler = self._stmt_dispatch.get(self.current.type)
         if handler:
-            stmt = handler()
+            result = handler()
+            if isinstance(result, list):
+                stmts = result
+            else:
+                stmts = [result]
         elif self.check(TokenType.SUPER):
             # SUPER.Method(args) as a statement
-            stmt = self.parse_primary()
+            stmts = [self.parse_primary()]
         elif self.check(TokenType.IDENTIFIER):
-            stmt = self.parse_assignment_or_call()
+            stmts = [self.parse_assignment_or_call()]
         
-        if stmt:
+        for stmt in stmts:
             stmt.line = line
             
-        return stmt
+        return stmts
 
-    def parse_declare(self) -> DeclareStmt:
+    def parse_declare(self) -> List[DeclareStmt]:
         self.expect(TokenType.DECLARE)
-        name = self.expect(TokenType.IDENTIFIER).value
+        names = [self.expect(TokenType.IDENTIFIER).value]
+        while self.match(TokenType.COMMA):
+            names.append(self.expect(TokenType.IDENTIFIER).value)
+            
         self.expect(TokenType.COLON)
         
         is_array = False
@@ -195,10 +202,9 @@ class Parser:
         
         type_token = self.advance() # DATE, INTEGER, STRING, etc.
         # Verify it's a type keyword or identifier (user defined)
-        # simplistic check:
         type_name = type_token.value
         
-        return DeclareStmt(name, type_name, is_array, bounds)
+        return [DeclareStmt(name, type_name, is_array, bounds) for name in names]
 
     def parse_constant(self) -> 'ConstantDecl':
         """CONSTANT <name> = <value>"""
@@ -303,8 +309,8 @@ class Parser:
         self.expect(TokenType.COLON)
         stmts = []
         while self.current and not self._at_case_branch_end():
-            stmt = self.parse_statement()
-            if stmt: stmts.append(stmt)
+            new_stmts = self.parse_statement()
+            if new_stmts: stmts.extend(new_stmts)
         return CaseBranch(values, stmts)
 
     def _at_case_branch_end(self) -> bool:
@@ -655,23 +661,24 @@ class Parser:
         """Parse all class members until ENDCLASS."""
         members = []
         while self.current and not self.check(TokenType.ENDCLASS):
-            member = self._parse_class_member()
-            if member:
-                members.append(member)
+            new_members = self._parse_class_member()
+            if new_members:
+                members.extend(new_members)
         return members
 
-    def _parse_class_member(self):
-        """Parse a single class member with optional access modifier."""
+    def _parse_class_member(self) -> List[Stmt]:
+        """Parse a single class member (or list of members) with optional access modifier."""
         access = self._parse_access_modifier()
         
+        members = []
         if self._is_bare_field_declaration():
-            member = self._parse_bare_field()
+            members = [self._parse_bare_field()]
         else:
-            member = self.parse_statement()
+            members = self.parse_statement()
         
-        if member:
+        for member in members:
             member.access = access
-        return member
+        return members
 
     def _parse_access_modifier(self) -> str:
         """Parse an optional PUBLIC/PRIVATE access modifier, defaulting to PUBLIC."""
@@ -721,9 +728,15 @@ class Parser:
         fields = []
         while self.current and not self.check(TokenType.ENDTYPE):
             self.match(TokenType.DECLARE)  # consume DECLARE if present
-            field_name = self.expect(TokenType.IDENTIFIER).value
+            
+            names = [self.expect(TokenType.IDENTIFIER).value]
+            while self.match(TokenType.COMMA):
+                names.append(self.expect(TokenType.IDENTIFIER).value)
+                
             self.expect(TokenType.COLON)
             type_tok = self.advance()
-            fields.append((field_name, type_tok.value))
+            
+            for name in names:
+                fields.append((name, type_tok.value))
         return fields
 

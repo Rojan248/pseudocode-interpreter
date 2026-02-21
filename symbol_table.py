@@ -62,6 +62,9 @@ class Cell:
             return value
         if self._is_int_to_real_promotion(new_type):
             return float(value)
+        # Allow String -> Char if length is 1
+        if self.type == DataType.CHAR and new_type == DataType.STRING and isinstance(value, str) and len(value) == 1:
+            return value
         raise TypeError(
             f"Type mismatch: cannot assign {new_type.name} to {self.type.name}"
         )
@@ -87,6 +90,7 @@ class Cell:
         if key not in self.array_elements:
             self.array_elements[key] = Cell(None, self.array_bounds.element_type)
         self.array_elements[key].value = value
+        self.array_elements[key].type = self.array_bounds.element_type
 
     def _validate_array_indices(self, indices: List[int]):
         """Validate that this is an array and indices are within bounds."""
@@ -110,6 +114,9 @@ class Cell:
             return value
         if expected == DataType.REAL and val_type == DataType.INTEGER:
             return float(value)
+        # Allow String -> Char if length is 1
+        if expected == DataType.CHAR and val_type == DataType.STRING and isinstance(value, str) and len(value) == 1:
+            return value
         raise TypeError(
             f"Array element type mismatch: expected {expected.name}, got {val_type.name}"
         )

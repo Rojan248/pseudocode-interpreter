@@ -20,14 +20,35 @@ class DryRunInterpreter(Interpreter):
     """
 
     def __init__(self, symbol_table: SymbolTable, input_queue=None,
-                 traced_vars=None, max_steps=5000):
+                 trace_columns=None, max_steps=5000):
         super().__init__(symbol_table)
         self.trace = []
         self.step_count = 0
         self.max_steps = max_steps
         self.input_queue = list(input_queue) if input_queue else []
         self.input_index = 0
-        self.traced_vars = set(traced_vars) if traced_vars else None
+        
+        # Parse custom column expressions if provided
+        self.column_exprs = []
+        self.char_col_indices = set() # Track which columns are Chars[...] for sorting/formatting
+        
+        if trace_columns:
+            from lexer import Lexer
+            from parser import Parser
+            for idx, col_str in enumerate(trace_columns):
+                try:
+                    # Parse the column string into an AST node
+                    l = Lexer(col_str)
+                    tokens = l.tokenize()
+                    p = Parser(tokens)
+                    expr = p.parse_expression()
+                    self.column_exprs.append((col_str, expr))
+                except Exception:
+                    # Fallback for invalid expressions - just treat as name
+                    self.column_exprs.append((col_str, None))
+        else:
+            self.column_exprs = None  # None implies "auto-discover all variables"
+
         self.output_log = []
 
     # ══════════════════════════════════════════════════════
@@ -77,14 +98,41 @@ class DryRunInterpreter(Interpreter):
     # ══════════════════════════════════════════════════════
 
     def _snapshot_vars(self):
-        """Capture current values of traced variables."""
+        """Capture current values of traced columns."""
         snapshot = {}
+        
+        # Case 1: Custom defined columns (e.g. "I", "J", "Chars[J]")
+        if self.column_exprs is not None:
+            for col_name, node in self.column_exprs:
+                if node:
+                    try:
+                        val = self.evaluate(node)
+                        snapshot[col_name] = val
+                    except Exception:
+                        # Expression failed (e.g. J is out of bounds for Chars[J])
+                        snapshot[col_name] = "" 
+                else:
+                    snapshot[col_name] = ""
+            return snapshot
+
+        # Case 2: Auto-discovery (Cambridge Format)
         for scope_level in range(self.symbol_table.scope_level + 1):
             scope = self.symbol_table.scopes[scope_level]
             for name, sym in scope.items():
-                if self.traced_vars is not None and name not in self.traced_vars:
-                    continue
-                snapshot[name] = _snapshot_cell(sym.cell)
+                cell = sym.cell
+                if cell.is_array and cell.array_elements:
+                    # Expand array: Arr[1], Arr[2]...
+                    for key, elem_cell in sorted(cell.array_elements.items()):
+                        idx_str = ",".join(str(k) for k in key)
+                        col_name = f"{name}[{idx_str}]"
+                        try:
+                            snapshot[col_name] = elem_cell.get()
+                        except Exception:
+                            snapshot[col_name] = elem_cell.value
+                elif cell.is_array:
+                    pass
+                else:
+                    snapshot[name] = _snapshot_cell(cell)
         return snapshot
 
     def _record(self, stmt, note=""):
@@ -100,6 +148,8 @@ class DryRunInterpreter(Interpreter):
             'statement': _describe_stmt(stmt),
             'note': note,
             'variables': self._snapshot_vars(),
+            'is_declare': isinstance(stmt, (DeclareStmt, ConstantDecl)),
+            'is_definition': isinstance(stmt, (ProcedureDecl, FunctionDecl, TypeDecl, ClassDecl)),
         })
 
     # ══════════════════════════════════════════════════════
@@ -234,21 +284,39 @@ class DryRunInterpreter(Interpreter):
     # ══════════════════════════════════════════════════════
 
     def get_all_var_names(self):
-        """Sorted list of all variable names that appeared in the trace."""
+        """Return list of column headers.
+        If custom columns were provided, return them in defined order.
+        Otherwise, return sorted auto-discovered variables.
+        """
+        if self.column_exprs is not None:
+            return [name for name, _ in self.column_exprs]
+
         names = set()
         for entry in self.trace:
             names.update(entry['variables'].keys())
         names -= set(self.procedures.keys())
         names -= set(self.functions.keys())
-        return sorted(names)
+        
+        # Sort: scalars first alphabetically, then array elements
+        scalars = sorted(n for n in names if '[' not in n)
+        arrays = sorted((n for n in names if '[' in n),
+                        key=lambda x: (x.split('[')[0], _parse_array_sort_key(x)))
+        return scalars + arrays
+
+    def get_cambridge_trace(self):
+        """Return trace entries filtered for Cambridge exam format.
+        Skips DECLARE/definition steps and only includes execution steps.
+        """
+        return [e for e in self.trace
+                if not e.get('is_declare') and not e.get('is_definition')]
 
     def format_trace_text(self):
         """Format the trace as an ASCII table string."""
         if not self.trace:
             return "No trace data recorded."
         var_names = self.get_all_var_names()
-        headers = ['Step', 'Line', 'Statement', 'Note'] + var_names
-        rows = _build_trace_rows(self.trace, var_names)
+        headers = ['Step', 'Line'] + var_names
+        rows = _build_cambridge_rows(self.trace, var_names)
         return _format_ascii_table(headers, rows)
 
 
@@ -406,17 +474,65 @@ def _walk_children(stmt, results):
 
 # ── Trace table formatting helpers ──
 
-def _build_trace_rows(trace, var_names):
-    """Build row data for the trace table."""
+def _parse_array_sort_key(name):
+    """Parse array element name like 'Chars[2]' into a sortable key."""
+    try:
+        idx_part = name.split('[')[1].rstrip(']')
+        return tuple(int(x) for x in idx_part.split(','))
+    except (ValueError, IndexError):
+        return (0,)
+
+
+def _build_cambridge_rows(trace, var_names):
+    """Build Cambridge exam-style trace rows.
+    Only shows values when they change from the previous step.
+    Skips DECLARE/definition steps.
+    """
     rows = []
+    prev_values = {}  # Track previous value for each variable
+    step_num = 0
     for entry in trace:
-        row = [str(entry['step']), str(entry['line']),
-               entry['statement'], entry['note']]
+        # Skip DECLARE and definition steps
+        if entry.get('is_declare') or entry.get('is_definition'):
+            continue
+        step_num += 1
+        row = [str(step_num), str(entry['line'])]
         for vn in var_names:
-            val = entry['variables'].get(vn, '')
-            row.append(_format_trace_cell(val))
+            val = entry['variables'].get(vn, None)
+            if val is None:
+                # Variable doesn't exist yet
+                row.append('')
+            else:
+                formatted = _format_cambridge_cell(val)
+                prev = prev_values.get(vn)
+                if prev is None or prev != formatted:
+                    row.append(formatted)
+                    prev_values[vn] = formatted
+                else:
+                    row.append('')  # Unchanged — leave blank
         rows.append(row)
     return rows
+
+
+def _format_cambridge_cell(val):
+    """Format a single cell value in Cambridge exam style."""
+    if val is None or val == '':
+        return ''
+    if isinstance(val, bool):
+        return 'TRUE' if val else 'FALSE'
+    if isinstance(val, str):
+        # Show chars/strings with quotes like the exam paper
+        if len(val) == 1:
+            return f"'{val}'"
+        return f'"{val}"'
+    if isinstance(val, float):
+        # Show clean floats
+        if val == int(val):
+            return str(int(val))
+        return str(val)
+    if isinstance(val, dict):
+        return str(val)
+    return str(val)
 
 
 def _format_trace_cell(val):
