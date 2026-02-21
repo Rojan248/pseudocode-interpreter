@@ -567,17 +567,48 @@ class Interpreter:
     def evaluate_BinaryExpr(self, expr: BinaryExpr):
         left = self.evaluate(expr.left)
         right = self.evaluate(expr.right)
-        return _eval_binary_op(expr.operator, left, right)
+        op = expr.operator
 
-    _SIMPLE_OPS = {
-        '+': lambda l, r: l + r,  '-': lambda l, r: l - r,
-        '*': lambda l, r: l * r,  '&': lambda l, r: str(l) + str(r),
-        '=': lambda l, r: l == r, '<>': lambda l, r: l != r,
-        '<': lambda l, r: l < r,  '>': lambda l, r: l > r,
-        '<=': lambda l, r: l <= r, '>=': lambda l, r: l >= r,
-        'AND': lambda l, r: bool(l and r),
-        'OR': lambda l, r: bool(l or r),
-    }
+        if op == '+':
+            return left + right
+        if op == '-':
+            return left - right
+        if op == '*':
+            return left * right
+        if op == '<':
+            return left < right
+        if op == '>':
+            return left > right
+        if op == '=':
+            return left == right
+        if op == '<=':
+            return left <= right
+        if op == '>=':
+            return left >= right
+        if op == '<>':
+            return left != right
+        if op == '&':
+            return str(left) + str(right)
+        if op == 'AND':
+            return bool(left and right)
+        if op == 'OR':
+            return bool(left or right)
+
+        # Division / Modulo
+        if op == '/':
+            if right == 0:
+                raise InterpreterError("Division by zero (/)")
+            return left / right
+        if op == 'DIV':
+            if right == 0:
+                raise InterpreterError("Division by zero (DIV)")
+            return int(left / right)
+        if op == 'MOD':
+            if right == 0:
+                raise InterpreterError("Division by zero (MOD)")
+            return left - int(left / right) * right
+
+        raise InterpreterError(f"Unknown operator {op}")
 
     def evaluate_UnaryExpr(self, expr: UnaryExpr):
         val = self.evaluate(expr.operand)
@@ -662,20 +693,6 @@ def _case_branch_matches(branch, sel_val, evaluate_fn):
     return False
 
 
-def _eval_binary_op(op, left, right):
-    """Evaluate a binary operation using the dispatch table."""
-    simple_fn = Interpreter._SIMPLE_OPS.get(op)
-    if simple_fn:
-        return simple_fn(left, right)
-    if op in ('/', 'DIV', 'MOD'):
-        if right == 0:
-            raise InterpreterError(f"Division by zero ({op})")
-        if op == '/':
-            return left / right
-        if op == 'DIV':
-            return int(left / right)
-        return left - int(left / right) * right
-    raise InterpreterError(f"Unknown operator {op}")
 
 
 # ── Input coercion dispatch table ──
