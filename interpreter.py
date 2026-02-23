@@ -567,7 +567,47 @@ class Interpreter:
     def evaluate_BinaryExpr(self, expr: BinaryExpr):
         left = self.evaluate(expr.left)
         right = self.evaluate(expr.right)
-        return _eval_binary_op(expr.operator, left, right)
+        op = expr.operator
+
+        # Inline evaluation for common operators to avoid function call overhead
+        if op == '+':
+            return left + right
+        elif op == '-':
+            return left - right
+        elif op == '*':
+            return left * right
+        elif op == '=':
+            return left == right
+        elif op == '<':
+            return left < right
+        elif op == '>':
+            return left > right
+        elif op == '<>':
+            return left != right
+        elif op == '<=':
+            return left <= right
+        elif op == '>=':
+            return left >= right
+        elif op == 'AND':
+            return bool(left and right)
+        elif op == 'OR':
+            return bool(left or right)
+        elif op == '&':
+            return str(left) + str(right)
+        elif op == '/':
+            if right == 0:
+                raise InterpreterError(f"Division by zero ({op})")
+            return left / right
+        elif op == 'DIV':
+            if right == 0:
+                raise InterpreterError(f"Division by zero ({op})")
+            return int(left / right)
+        elif op == 'MOD':
+            if right == 0:
+                raise InterpreterError(f"Division by zero ({op})")
+            return left - int(left / right) * right
+
+        return _eval_binary_op(op, left, right)
 
     _SIMPLE_OPS = {
         '+': lambda l, r: l + r,  '-': lambda l, r: l - r,
