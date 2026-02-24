@@ -152,20 +152,27 @@ class CodeEditor(tk.Text):
     def _setup_tags(self):
         base_font = self.cget("font")
         for tag, cfg in self.TAG_CONFIG.items():
-            opts = {"foreground": cfg.get("foreground", COLORS["text"])}
-            if "background" in cfg:
-                opts["background"] = cfg["background"]
-            style = cfg.get("font_style", "")
-            if style:
-                fam = tkfont.Font(font=base_font).actual()["family"]
-                sz = tkfont.Font(font=base_font).actual()["size"]
-                weight = "bold" if "bold" in style else "normal"
-                slant = "italic" if "italic" in style else "roman"
-                opts["font"] = tkfont.Font(family=fam, size=sz, weight=weight, slant=slant)
+            opts = self._build_tag_options(base_font, cfg)
             self.tag_configure(tag, **opts)
         # current_line must sit BELOW all syntax tags so colours show through
         self.tag_lower("current_line")
         self.tag_raise("error_line")
+
+    def _build_tag_options(self, base_font, cfg):
+        """Build a dict of tag_configure options from a TAG_CONFIG entry."""
+        opts = {"foreground": cfg.get("foreground", COLORS["text"])}
+        if "background" in cfg:
+            opts["background"] = cfg["background"]
+        style = cfg.get("font_style", "")
+        if style:
+            actual = tkfont.Font(font=base_font).actual()
+            weight = "bold" if "bold" in style else "normal"
+            slant = "italic" if "italic" in style else "roman"
+            opts["font"] = tkfont.Font(
+                family=actual["family"], size=actual["size"],
+                weight=weight, slant=slant,
+            )
+        return opts
 
     # ── Current-line highlight ──
 
@@ -197,37 +204,48 @@ class CodeEditor(tk.Text):
                 self.tag_remove(tag, "1.0", "end")
 
         code = self.get("1.0", "end-1c")
-        patterns = [
-            ("comment",      r'//[^\n]*'),
-            ("string",       r'"[^"]*"'),
-            ("char",         r"'[^']*'"),
-            ("assign_arrow", r'<-'),
-            ("number",       r'\b\d+\.\d+\b|\b\d+\b'),
-            ("operator",     r'<>|<=|>=|[<>=+\-*/&]'),
-        ]
-        for tag, pat in patterns:
-            for m in re.finditer(pat, code):
-                start = f"1.0+{m.start()}c"
-                end = f"1.0+{m.end()}c"
-                self.tag_add(tag, start, end)
+        self._apply_regex_patterns(code)
+        self._apply_keyword_tags(code)
 
-        word_groups = [
-            ("keyword_ctrl", KEYWORDS_CONTROL),
-            ("keyword_decl", KEYWORDS_DECL),
-            ("keyword_type", KEYWORDS_TYPE),
-            ("keyword_io",   KEYWORDS_IO),
-            ("keyword_op",   KEYWORDS_OP),
-            ("builtin",      BUILTINS),
-        ]
-        for tag, words in word_groups:
+    # ── Syntax-highlighting helpers ──
+
+    _REGEX_PATTERNS = [
+        ("comment",      r'//[^\n]*'),
+        ("string",       r'"[^"]*"'),
+        ("char",         r"'[^']*'"),
+        ("assign_arrow", r'<-'),
+        ("number",       r'\b\d+\.\d+\b|\b\d+\b'),
+        ("operator",     r'<>|<=|>=|[<>=+\-*/&]'),
+    ]
+
+    _WORD_GROUPS = [
+        ("keyword_ctrl", KEYWORDS_CONTROL),
+        ("keyword_decl", KEYWORDS_DECL),
+        ("keyword_type", KEYWORDS_TYPE),
+        ("keyword_io",   KEYWORDS_IO),
+        ("keyword_op",   KEYWORDS_OP),
+        ("builtin",      BUILTINS),
+    ]
+
+    def _apply_regex_patterns(self, code):
+        """Apply regex-based syntax tags (comments, strings, numbers, etc.)."""
+        for tag, pat in self._REGEX_PATTERNS:
+            for m in re.finditer(pat, code):
+                self.tag_add(tag, f"1.0+{m.start()}c", f"1.0+{m.end()}c")
+
+    def _apply_keyword_tags(self, code):
+        """Apply keyword/builtin tags, skipping positions inside literals."""
+        for tag, words in self._WORD_GROUPS:
             for w in words:
-                pat = rf'\b{w}\b'
-                for m in re.finditer(pat, code):
-                    start = f"1.0+{m.start()}c"
-                    end = f"1.0+{m.end()}c"
-                    tags_at = self.tag_names(start)
-                    if "string" not in tags_at and "comment" not in tags_at and "char" not in tags_at:
-                        self.tag_add(tag, start, end)
+                for m in re.finditer(rf'\b{w}\b', code):
+                    pos = f"1.0+{m.start()}c"
+                    if not self._is_inside_literal(pos):
+                        self.tag_add(tag, pos, f"1.0+{m.end()}c")
+
+    def _is_inside_literal(self, pos):
+        """Return True if the given text position is inside a string, comment, or char literal."""
+        tags_at = self.tag_names(pos)
+        return "string" in tags_at or "comment" in tags_at or "char" in tags_at
 
     def mark_error_line(self, line_num):
         """Highlight a specific line as an error."""
@@ -396,8 +414,16 @@ class DryRunSetupDialog(ctk.CTkToplevel):
             font=("Segoe UI", 10), text_color=COLORS["subtext"], justify="left",
         ).pack(anchor="w", pady=(0, 14))
 
-        # ── Input Values ──
-        input_card = ctk.CTkFrame(main, fg_color=COLORS["surface"], corner_radius=10)
+        self._build_input_card(main)
+        self._build_variable_card(main)
+        self._build_action_buttons(main)
+
+        if self.input_entries:
+            self.input_entries[0].focus()
+
+    def _build_input_card(self, parent):
+        """Build the 'Input Values' card section."""
+        input_card = ctk.CTkFrame(parent, fg_color=COLORS["surface"], corner_radius=10)
         input_card.pack(fill="x", pady=(0, 12))
 
         ctk.CTkLabel(
@@ -450,8 +476,9 @@ class DryRunSetupDialog(ctk.CTkToplevel):
             ).pack(padx=14, pady=(0, 10))
             self.bulk_entry = None
 
-        # ── Variables to Trace ──
-        var_card = ctk.CTkFrame(main, fg_color=COLORS["surface"], corner_radius=10)
+    def _build_variable_card(self, parent):
+        """Build the 'Trace Table Columns' card section."""
+        var_card = ctk.CTkFrame(parent, fg_color=COLORS["surface"], corner_radius=10)
         var_card.pack(fill="both", expand=True, pady=(0, 12))
 
         ctk.CTkLabel(
@@ -519,8 +546,9 @@ class DryRunSetupDialog(ctk.CTkToplevel):
                 font=("Segoe UI", 9), text_color=COLORS["subtext"],
             ).pack(padx=8, pady=4)
 
-        # ── Buttons ──
-        btn_frame = ctk.CTkFrame(main, fg_color="transparent")
+    def _build_action_buttons(self, parent):
+        """Build the bottom action buttons (Start / Cancel)."""
+        btn_frame = ctk.CTkFrame(parent, fg_color="transparent")
         btn_frame.pack(fill="x")
 
         ctk.CTkButton(
@@ -538,9 +566,6 @@ class DryRunSetupDialog(ctk.CTkToplevel):
             width=90, height=38, command=self._cancel,
         ).pack(side="right", padx=(0, 8))
 
-        if self.input_entries:
-            self.input_entries[0].focus()
-
     # ──────── Helpers ────────
 
     def _toggle_all(self):
@@ -549,48 +574,41 @@ class DryRunSetupDialog(ctk.CTkToplevel):
             bv.set(state)
 
     def _submit(self, _event=None):
-        inputs = []
-        if self.bulk_entry: # Use self.bulk_entry directly if it exists, otherwise skip
-            try:
-                bulk = self.bulk_entry.get().strip()
-                if bulk:
-                    # simplistic CSV parsing
-                    for v in bulk.split(","):
-                        v = v.strip()
-                        if v:
-                            inputs.append(v)
-            except Exception:
-                pass # safely ignore if bulk_entry is None or error
-        
-        # If no bulk inputs, read individual fields
-        if not inputs and self.input_entries:
-            for entry in self.input_entries:
-                inputs.append(entry.get().strip())
-
-        # Check for custom columns
-        custom_cols = self.custom_cols_entry.get().strip()
-        trace_columns = None
-        traced_vars = None
-
-        if custom_cols:
-            # User defined specific columns (expressions included)
-            trace_columns = [
-                c.strip() for c in custom_cols.split(',') if c.strip()
-            ]
-        else:
-            # Use checkbox selection
-            if not self.select_all_var.get():
-                traced_vars = set()
-                for name, bv in self.var_checkboxes.items():
-                    if bv.get():
-                        traced_vars.add(name)
-        
+        inputs = self._parse_bulk_inputs()
+        if not inputs:
+            inputs = [e.get().strip() for e in self.input_entries]
+        trace_columns, traced_vars = self._resolve_trace_columns()
         self.result = {
-            'inputs': inputs, 
+            'inputs': inputs,
             'traced_vars': traced_vars,
-            'trace_columns': trace_columns
+            'trace_columns': trace_columns,
         }
         self.destroy()
+
+    def _parse_bulk_inputs(self):
+        """Parse comma-separated values from the bulk entry field."""
+        if not self.bulk_entry:
+            return []
+        try:
+            bulk = self.bulk_entry.get().strip()
+            if bulk:
+                return [v.strip() for v in bulk.split(",") if v.strip()]
+        except Exception:
+            pass
+        return []
+
+    def _resolve_trace_columns(self):
+        """Determine trace columns from custom entry or checkbox selection.
+
+        Returns (trace_columns, traced_vars) — one will be None.
+        """
+        custom_cols = self.custom_cols_entry.get().strip()
+        if custom_cols:
+            return [c.strip() for c in custom_cols.split(',') if c.strip()], None
+        if not self.select_all_var.get():
+            traced = {name for name, bv in self.var_checkboxes.items() if bv.get()}
+            return None, traced
+        return None, None
 
     def _cancel(self):
         self.result = None
@@ -647,7 +665,12 @@ class TraceTableWindow(ctk.CTkToplevel):
             width=70, height=28, command=self._export,
         ).pack(side="right", padx=10, pady=8)
 
-        # ── Treeview styling  (ttk — no CTk equivalent) ──
+        self._configure_treeview_style()
+        self._build_tree()
+        self._build_output_log_bar()
+
+    def _configure_treeview_style(self):
+        """Configure the ttk Treeview style to match the Catppuccin dark theme."""
         style = ttk.Style(self)
         style.theme_use("clam")
         style.configure("Trace.Treeview",
@@ -667,7 +690,8 @@ class TraceTableWindow(ctk.CTkToplevel):
         style.map("Trace.Treeview.Heading",
                   background=[("active", COLORS["overlay"])])
 
-        # ── Tree + scrollbars ──
+    def _build_tree(self):
+        """Build the Treeview widget with scrollbars and column headings."""
         tree_frame = tk.Frame(self, bg=COLORS["bg"])
         tree_frame.pack(fill="both", expand=True)
 
@@ -697,76 +721,75 @@ class TraceTableWindow(ctk.CTkToplevel):
         # Line column
         self.tree.heading('line', text='Line')
         self.tree.column('line', width=55, minwidth=40, anchor='center')
-        
+
         # Variable columns — Cambridge style
         for vn in var_names:
             self.tree.heading(vn, text=vn)
-            # Narrower columns for array elements, wider for scalars
             width = 80 if '[' in vn else 100
             self.tree.column(vn, width=width, minwidth=50, anchor='center')
 
         self.tree.tag_configure('even', background=COLORS["bg"])
         self.tree.tag_configure('odd', background=COLORS["bg_secondary"])
 
-        # ── Output log bar ──
-        if self.interp.output_log:
-            out_bar = ctk.CTkFrame(self, fg_color=COLORS["bg_secondary"],
-                                   corner_radius=0, height=32)
-            out_bar.pack(fill="x")
-            out_bar.pack_propagate(False)
-            ctk.CTkLabel(
-                out_bar, text="  OUTPUT LOG:",
-                font=("Segoe UI", 9, "bold"), text_color=COLORS["subtext"],
-            ).pack(side="left", padx=4)
-            out_text = " │ ".join(self.interp.output_log)
-            ctk.CTkLabel(
-                out_bar, text=out_text,
-                font=("Cascadia Code", 9), text_color=COLORS["green"],
-            ).pack(side="left", padx=8)
+    def _build_output_log_bar(self):
+        """Build the optional output-log bar at the bottom."""
+        if not self.interp.output_log:
+            return
+        out_bar = ctk.CTkFrame(self, fg_color=COLORS["bg_secondary"],
+                               corner_radius=0, height=32)
+        out_bar.pack(fill="x")
+        out_bar.pack_propagate(False)
+        ctk.CTkLabel(
+            out_bar, text="  OUTPUT LOG:",
+            font=("Segoe UI", 9, "bold"), text_color=COLORS["subtext"],
+        ).pack(side="left", padx=4)
+        out_text = " │ ".join(self.interp.output_log)
+        ctk.CTkLabel(
+            out_bar, text=out_text,
+            font=("Cascadia Code", 9), text_color=COLORS["green"],
+        ).pack(side="left", padx=8)
 
     # ──────── helpers ────────
 
     def _fmt(self, val):
+        """Format a value for display in Cambridge trace-table style."""
         if isinstance(val, bool):
             return "TRUE" if val else "FALSE"
         if isinstance(val, str):
-            if len(val) == 1:
-                return f"'{val}'"
-            return val
-        if isinstance(val, dict):
-            return str(val)
+            return f"'{val}'" if len(val) == 1 else val
         return str(val)
 
-    def _populate(self):
-        """Populate the trace table in Cambridge exam format.
-        Only shows values when they change from the previous row.
-        Skips DECLARE/definition steps.
+    def _format_row_values(self, entry, var_names, prev_values):
+        """Build a row of display values, showing only changed columns.
+
+        Updates *prev_values* in-place and returns the list of cell strings.
         """
+        # The 'line' column is handled separately in _populate and _export_csv
+        values = []
+        for vn in var_names:
+            val = entry['variables'].get(vn)
+            if val is None:
+                values.append('')
+                continue
+            formatted = self._fmt(val)
+            if prev_values.get(vn) != formatted:
+                values.append(formatted)
+                prev_values[vn] = formatted
+            else:
+                values.append('')
+        return values
+
+    def _populate(self):
+        """Populate the trace table in Cambridge exam format."""
         var_names = self.interp.get_all_var_names()
         prev_values = {}  # Track previous formatted value per column
         row_idx = 0
         
-        for entry in self.interp.trace:
-            # Skip DECLARE and definition steps
-            if entry.get('is_declare') or entry.get('is_definition'):
-                continue
-                
-            values = [entry['line']]
-            for vn in var_names:
-                val = entry['variables'].get(vn, None)
-                if val is None:
-                    values.append('')
-                else:
-                    formatted = self._fmt(val)
-                    prev = prev_values.get(vn)
-                    if prev is None or prev != formatted:
-                        values.append(formatted)
-                        prev_values[vn] = formatted
-                    else:
-                        values.append('')  # Unchanged — leave blank
+        for entry in self.interp.get_cambridge_trace(): # Use get_cambridge_trace directly
+            values = self._format_row_values(entry, var_names, prev_values)
             
             tag = 'even' if row_idx % 2 == 0 else 'odd'
-            self.tree.insert('', 'end', values=values, tags=(tag,))
+            self.tree.insert('', 'end', values=[entry['line']] + values, tags=(tag,)) # Add line number here
             row_idx += 1
 
     def _export(self):
@@ -787,26 +810,17 @@ class TraceTableWindow(ctk.CTkToplevel):
         messagebox.showinfo("Export", f"Exported to:\n{path}", parent=self)
 
     def _export_csv(self, path):
+        """Export the trace table as a CSV file."""
         var_names = self.interp.get_all_var_names()
         headers = ['Line'] + var_names
-        cambridge_trace = self.interp.get_cambridge_trace()
         prev_values = {}
         with open(path, 'w', encoding='utf-8') as f:
             f.write(','.join(headers) + '\n')
-            for entry in cambridge_trace:
-                row = [str(entry['line'])]
-                for vn in var_names:
-                    val = entry['variables'].get(vn, None)
-                    if val is None:
-                        row.append('')
-                    else:
-                        formatted = self._fmt(val)
-                        prev = prev_values.get(vn)
-                        if prev is None or prev != formatted:
-                            row.append(f'"{formatted}"')
-                            prev_values[vn] = formatted
-                        else:
-                            row.append('')
+            for entry in self.interp.get_cambridge_trace():
+                values = self._format_row_values(entry, var_names, prev_values)
+                # Quote non-empty cells for CSV safety
+                row = [f'"{v}"' if v != '' else '' for v in values]
+                row.insert(0, str(entry['line'])) # Insert line number at the beginning, unquoted
                 f.write(','.join(row) + '\n')
         messagebox.showinfo("Export", f"Exported to:\n{path}", parent=self)
 
@@ -1169,26 +1183,11 @@ class PseudocodeIDE:
             self.run_btn.configure(fg_color=COLORS["green"])
 
     def _execute(self, source):
-        filename = self.current_file or "<editor>"
-
-        try:
-            lexer = Lexer(source, filename)
-            tokens = lexer.tokenize()
-        except LexerError as e:
-            self._show_error("Lexer Error", str(e))
+        tokens = self._lex(source)
+        if tokens is None:
             return
-        except Exception as e:
-            self._show_error("Lexer Error", str(e))
-            return
-
-        try:
-            parser = Parser(tokens)
-            statements = parser.parse()
-        except ParserError as e:
-            self._show_error("Parser Error", str(e))
-            return
-        except Exception as e:
-            self._show_error("Parser Error", str(e))
+        statements = self._parse(tokens)
+        if statements is None:
             return
 
         symbol_table = SymbolTable()
@@ -1227,6 +1226,27 @@ class PseudocodeIDE:
         finally:
             sys.stdout = old_stdout
             builtins.input = original_input
+
+    def _lex(self, source):
+        """Tokenize source code, returning tokens or None on error."""
+        filename = self.current_file or "<editor>"
+        try:
+            return Lexer(source, filename).tokenize()
+        except LexerError as e:
+            self._show_error("Lexer Error", str(e))
+        except Exception as e:
+            self._show_error("Lexer Error", str(e))
+        return None
+
+    def _parse(self, tokens):
+        """Parse tokens into statements, returning statements or None on error."""
+        try:
+            return Parser(tokens).parse()
+        except ParserError as e:
+            self._show_error("Parser Error", str(e))
+        except Exception as e:
+            self._show_error("Parser Error", str(e))
+        return None
 
     # ═══════ Dry Run ═══════
 
@@ -1282,7 +1302,7 @@ class PseudocodeIDE:
             symbol_table,
             input_queue=setup['inputs'],
             traced_vars=setup['traced_vars'],
-            trace_columns=setup.get('trace_columns') # Pass custom columns
+            trace_columns=setup.get('trace_columns'),
         )
 
         old_stdout = sys.stdout
@@ -1291,13 +1311,7 @@ class PseudocodeIDE:
         try:
             interpreter.interpret(statements)
             self._show_dryrun_success(interpreter)
-        except InterpreterError as e:
-            self._show_error("Runtime Error",
-                             f"Line {interpreter.current_line}: {e}",
-                             interpreter.current_line)
-            if interpreter.trace:
-                self._open_trace_window(interpreter)
-        except Exception as e:
+        except (InterpreterError, Exception) as e:
             self._show_error("Runtime Error",
                              f"Line {interpreter.current_line}: {e}",
                              interpreter.current_line)
