@@ -455,6 +455,8 @@ _COMPOUND_CHILDREN = {
     WhileStmt:  lambda s: [s.body],
     RepeatStmt: lambda s: [s.body],
     ForStmt:    lambda s: [s.body],
+    ProcedureDecl: lambda s: [s.body],
+    FunctionDecl:  lambda s: [s.body],
 }
 
 
@@ -467,16 +469,24 @@ def _walk_children(stmt, results):
         return
 
     if isinstance(stmt, CaseStmt):
-        for branch in stmt.branches:
-            DryRunInterpreter._walk_for_inputs(branch.statements, results)
-        if stmt.otherwise_branch:
-            DryRunInterpreter._walk_for_inputs(stmt.otherwise_branch, results)
-    elif isinstance(stmt, (ProcedureDecl, FunctionDecl)):
-        DryRunInterpreter._walk_for_inputs(stmt.body, results)
+        _walk_case_children(stmt, results)
     elif isinstance(stmt, ClassDecl):
-        for member in stmt.members:
-            if isinstance(member, (ProcedureDecl, FunctionDecl)):
-                DryRunInterpreter._walk_for_inputs(member.body, results)
+        _walk_class_children(stmt, results)
+
+
+def _walk_case_children(stmt, results):
+    """Recurse into CASE statement branches."""
+    for branch in stmt.branches:
+        DryRunInterpreter._walk_for_inputs(branch.statements, results)
+    if stmt.otherwise_branch:
+        DryRunInterpreter._walk_for_inputs(stmt.otherwise_branch, results)
+
+
+def _walk_class_children(stmt, results):
+    """Recurse into CLASS member procedures/functions."""
+    for member in stmt.members:
+        if isinstance(member, (ProcedureDecl, FunctionDecl)):
+            DryRunInterpreter._walk_for_inputs(member.body, results)
 
 
 # ── Trace table formatting helpers ──
@@ -544,13 +554,18 @@ def _format_trace_cell(val):
     return _fmt_value(val)
 
 
-def _format_ascii_table(headers, rows):
-    """Render headers + rows as a fixed-width ASCII table."""
+def _compute_column_widths(headers, rows, max_width=30):
+    """Compute column widths from headers and row data, capped at max_width."""
     col_w = [len(h) for h in headers]
     for row in rows:
         for i, c in enumerate(row):
             col_w[i] = max(col_w[i], len(str(c)))
-    col_w = [min(w, 30) for w in col_w]
+    return [min(w, max_width) for w in col_w]
+
+
+def _format_ascii_table(headers, rows):
+    """Render headers + rows as a fixed-width ASCII table."""
+    col_w = _compute_column_widths(headers, rows)
 
     def pad(s, w):
         return str(s)[:w].ljust(w)
