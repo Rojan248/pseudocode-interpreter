@@ -580,55 +580,61 @@ class Interpreter:
 
     # ── Binary / Unary operator dispatch tables ──
 
-    _BINARY_OPS = {
-        '+':   lambda l, r: l + r,
-        '-':   lambda l, r: l - r,
-        '*':   lambda l, r: l * r,
-        '=':   lambda l, r: l == r,
-        '<':   lambda l, r: l < r,
-        '>':   lambda l, r: l > r,
-        '<>':  lambda l, r: l != r,
-        '<=':  lambda l, r: l <= r,
-        '>=':  lambda l, r: l >= r,
-        'AND': lambda l, r: bool(l and r),
-        'OR':  lambda l, r: bool(l or r),
-        '&':   lambda l, r: str(l) + str(r),
-    }
-
-    _UNARY_OPS = {
-        '-':   lambda v: -v,
-        'NOT': lambda v: not v,
-    }
-
     def evaluate_BinaryExpr(self, expr: BinaryExpr):
         left = self.evaluate(expr.left)
         right = self.evaluate(expr.right)
         op = expr.operator
 
-        fn = self._BINARY_OPS.get(op)
-        if fn:
-            return fn(left, right)
-        if op in ('/', 'DIV', 'MOD'):
-            return self._eval_division(op, left, right)
-        raise InterpreterError(f"Unknown operator {op}")
-
-    @staticmethod
-    def _eval_division(op, left, right):
-        """Handle division operators with zero-check."""
-        if right == 0:
-            raise InterpreterError(f"Division by zero ({op})")
-        if op == '/':
-            return left / right
-        if op == 'DIV':
+        # Optimization: Inline if/elif chain avoids dictionary lookup and lambda overhead
+        if op == '+':
+            return left + right
+        elif op == '-':
+            return left - right
+        elif op == '*':
+            return left * right
+        elif op == 'DIV':
+            if right == 0:
+                raise InterpreterError("Division by zero (DIV)")
             return int(left / right)
-        return left - int(left / right) * right
+        elif op == '/':
+            if right == 0:
+                raise InterpreterError("Division by zero (/)")
+            return left / right
+        elif op == '=':
+            return left == right
+        elif op == '<':
+            return left < right
+        elif op == '>':
+            return left > right
+        elif op == '<>':
+            return left != right
+        elif op == '<=':
+            return left <= right
+        elif op == '>=':
+            return left >= right
+        elif op == 'AND':
+            return bool(left and right)
+        elif op == 'OR':
+            return bool(left or right)
+        elif op == '&':
+            return str(left) + str(right)
+        elif op == 'MOD':
+            if right == 0:
+                raise InterpreterError("Division by zero (MOD)")
+            return left - int(left / right) * right
+
+        raise InterpreterError(f"Unknown operator {op}")
 
     def evaluate_UnaryExpr(self, expr: UnaryExpr):
         val = self.evaluate(expr.operand)
-        fn = self._UNARY_OPS.get(expr.operator)
-        if fn:
-            return fn(val)
-        raise InterpreterError(f"Unknown unary operator {expr.operator}")
+        op = expr.operator
+
+        if op == '-':
+            return -val
+        elif op == 'NOT':
+            return not val
+
+        raise InterpreterError(f"Unknown unary operator {op}")
 
     def evaluate_MethodCallExpr(self, expr):
         """Evaluate obj.Method(args) — method call on object."""
