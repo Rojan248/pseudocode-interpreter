@@ -99,41 +99,48 @@ class DryRunInterpreter(Interpreter):
 
     def _snapshot_vars(self):
         """Capture current values of traced columns."""
-        snapshot = {}
-        
-        # Case 1: Custom defined columns (e.g. "I", "J", "Chars[J]")
         if self.column_exprs is not None:
-            for col_name, node in self.column_exprs:
-                if node:
-                    try:
-                        val = self.evaluate(node)
-                        snapshot[col_name] = val
-                    except Exception:
-                        # Expression failed (e.g. J is out of bounds for Chars[J])
-                        snapshot[col_name] = "" 
-                else:
-                    snapshot[col_name] = ""
-            return snapshot
+            return self._snapshot_custom_columns()
+        return self._snapshot_auto_vars()
 
-        # Case 2: Auto-discovery (Cambridge Format)
+    def _snapshot_custom_columns(self):
+        """Evaluate user-defined column expressions and return a snapshot dict."""
+        snapshot = {}
+        for col_name, node in self.column_exprs:
+            snapshot[col_name] = self._eval_column_expr(node)
+        return snapshot
+
+    def _eval_column_expr(self, node):
+        """Safely evaluate a single column expression AST node."""
+        if not node:
+            return ""
+        try:
+            return self.evaluate(node)
+        except Exception:
+            return ""
+
+    def _snapshot_auto_vars(self):
+        """Auto-discover all variables across scopes and return a snapshot dict."""
+        snapshot = {}
         for scope_level in range(self.symbol_table.scope_level + 1):
             scope = self.symbol_table.scopes[scope_level]
             for name, sym in scope.items():
                 cell = sym.cell
                 if cell.is_array and cell.array_elements:
-                    # Expand array: Arr[1], Arr[2]...
-                    for key, elem_cell in sorted(cell.array_elements.items()):
-                        idx_str = ",".join(str(k) for k in key)
-                        col_name = f"{name}[{idx_str}]"
-                        try:
-                            snapshot[col_name] = elem_cell.get()
-                        except Exception:
-                            snapshot[col_name] = elem_cell.value
-                elif cell.is_array:
-                    pass
-                else:
+                    self._snapshot_array_elements(snapshot, name, cell)
+                elif not cell.is_array:
                     snapshot[name] = _snapshot_cell(cell)
         return snapshot
+
+    def _snapshot_array_elements(self, snapshot, name, cell):
+        """Expand array elements into individual snapshot columns."""
+        for key, elem_cell in sorted(cell.array_elements.items()):
+            idx_str = ",".join(str(k) for k in key)
+            col_name = f"{name}[{idx_str}]"
+            try:
+                snapshot[col_name] = elem_cell.get()
+            except Exception:
+                snapshot[col_name] = elem_cell.value
 
     def _record(self, stmt, note=""):
         """Record one trace table row."""
@@ -489,29 +496,28 @@ def _build_cambridge_rows(trace, var_names):
     Skips DECLARE/definition steps.
     """
     rows = []
-    prev_values = {}  # Track previous value for each variable
+    prev_values = {}
     step_num = 0
     for entry in trace:
-        # Skip DECLARE and definition steps
         if entry.get('is_declare') or entry.get('is_definition'):
             continue
         step_num += 1
         row = [str(step_num), str(entry['line'])]
-        for vn in var_names:
-            val = entry['variables'].get(vn, None)
-            if val is None:
-                # Variable doesn't exist yet
-                row.append('')
-            else:
-                formatted = _format_cambridge_cell(val)
-                prev = prev_values.get(vn)
-                if prev is None or prev != formatted:
-                    row.append(formatted)
-                    prev_values[vn] = formatted
-                else:
-                    row.append('')  # Unchanged — leave blank
+        row.extend(_format_changed_cell(entry, vn, prev_values) for vn in var_names)
         rows.append(row)
     return rows
+
+
+def _format_changed_cell(entry, var_name, prev_values):
+    """Format a single cell, returning '' if unchanged from the previous row."""
+    val = entry['variables'].get(var_name)
+    if val is None:
+        return ''
+    formatted = _format_cambridge_cell(val)
+    if prev_values.get(var_name) != formatted:
+        prev_values[var_name] = formatted
+        return formatted
+    return ''
 
 
 def _format_cambridge_cell(val):
@@ -521,17 +527,9 @@ def _format_cambridge_cell(val):
     if isinstance(val, bool):
         return 'TRUE' if val else 'FALSE'
     if isinstance(val, str):
-        # Show chars/strings with quotes like the exam paper
-        if len(val) == 1:
-            return f"'{val}'"
-        return f'"{val}"'
-    if isinstance(val, float):
-        # Show clean floats
-        if val == int(val):
-            return str(int(val))
-        return str(val)
-    if isinstance(val, dict):
-        return str(val)
+        return f"'{val}'" if len(val) == 1 else f'"{val}"'
+    if isinstance(val, float) and val == int(val):
+        return str(int(val))
     return str(val)
 
 
