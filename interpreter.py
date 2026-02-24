@@ -578,53 +578,56 @@ class Interpreter:
         raise InterpreterError(
             f"Accessing field '{expr.field}' on non-record type {type(record_val)}")
 
+    # ── Binary / Unary operator dispatch tables ──
+
+    _BINARY_OPS = {
+        '+':   lambda l, r: l + r,
+        '-':   lambda l, r: l - r,
+        '*':   lambda l, r: l * r,
+        '=':   lambda l, r: l == r,
+        '<':   lambda l, r: l < r,
+        '>':   lambda l, r: l > r,
+        '<>':  lambda l, r: l != r,
+        '<=':  lambda l, r: l <= r,
+        '>=':  lambda l, r: l >= r,
+        'AND': lambda l, r: bool(l and r),
+        'OR':  lambda l, r: bool(l or r),
+        '&':   lambda l, r: str(l) + str(r),
+    }
+
+    _UNARY_OPS = {
+        '-':   lambda v: -v,
+        'NOT': lambda v: not v,
+    }
+
     def evaluate_BinaryExpr(self, expr: BinaryExpr):
         left = self.evaluate(expr.left)
         right = self.evaluate(expr.right)
         op = expr.operator
 
-        # Inline evaluation for common operators to avoid function call overhead
-        if op == '+':
-            return left + right
-        elif op == '-':
-            return left - right
-        elif op == '*':
-            return left * right
-        elif op == '=':
-            return left == right
-        elif op == '<':
-            return left < right
-        elif op == '>':
-            return left > right
-        elif op == '<>':
-            return left != right
-        elif op == '<=':
-            return left <= right
-        elif op == '>=':
-            return left >= right
-        elif op == 'AND':
-            return bool(left and right)
-        elif op == 'OR':
-            return bool(left or right)
-        elif op == '&':
-            return str(left) + str(right)
-        elif op in ('/', 'DIV', 'MOD'):
-            if right == 0:
-                raise InterpreterError(f"Division by zero ({op})")
-            if op == '/':
-                return left / right
-            if op == 'DIV':
-                return int(left / right)
-            return left - int(left / right) * right
+        fn = self._BINARY_OPS.get(op)
+        if fn:
+            return fn(left, right)
+        if op in ('/', 'DIV', 'MOD'):
+            return self._eval_division(op, left, right)
+        raise InterpreterError(f"Unknown operator {op}")
 
-        return _eval_binary_op(op, left, right)
+    @staticmethod
+    def _eval_division(op, left, right):
+        """Handle division operators with zero-check."""
+        if right == 0:
+            raise InterpreterError(f"Division by zero ({op})")
+        if op == '/':
+            return left / right
+        if op == 'DIV':
+            return int(left / right)
+        return left - int(left / right) * right
 
     def evaluate_UnaryExpr(self, expr: UnaryExpr):
         val = self.evaluate(expr.operand)
-        if expr.operator == '-':
-            return -val
-        if expr.operator == 'NOT':
-            return not val
+        fn = self._UNARY_OPS.get(expr.operator)
+        if fn:
+            return fn(val)
         raise InterpreterError(f"Unknown unary operator {expr.operator}")
 
     def evaluate_MethodCallExpr(self, expr):
@@ -702,9 +705,7 @@ def _case_branch_matches(branch, sel_val, evaluate_fn):
     return False
 
 
-def _eval_binary_op(op, left, right):
-    """Fallback for operators not handled inline in evaluate_BinaryExpr."""
-    raise InterpreterError(f"Unknown operator {op}")
+
 
 
 # ── Input coercion dispatch table ──
