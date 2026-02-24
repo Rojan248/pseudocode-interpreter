@@ -62,8 +62,7 @@ class Cell:
             return value
         if self._is_int_to_real_promotion(new_type):
             return float(value)
-        # Allow String -> Char if length is 1
-        if self.type == DataType.CHAR and new_type == DataType.STRING and isinstance(value, str) and len(value) == 1:
+        if self._is_string_to_char_coercion(self.type, new_type, value):
             return value
         raise TypeError(
             f"Type mismatch: cannot assign {new_type.name} to {self.type.name}"
@@ -72,6 +71,16 @@ class Cell:
     def _is_int_to_real_promotion(self, source_type: DataType) -> bool:
         """Check if assignment is a valid INTEGER→REAL promotion."""
         return self.type == DataType.REAL and source_type == DataType.INTEGER
+
+    @staticmethod
+    def _is_string_to_char_coercion(target_type, source_type, value) -> bool:
+        """Check if value is a single-character string assignable to a CHAR."""
+        return (
+            target_type == DataType.CHAR
+            and source_type == DataType.STRING
+            and isinstance(value, str)
+            and len(value) == 1
+        )
     
     def get_array_element(self, indices: List[int]) -> 'Cell':
         """Multi-dimensional 1-based array access."""
@@ -114,8 +123,7 @@ class Cell:
             return value
         if expected == DataType.REAL and val_type == DataType.INTEGER:
             return float(value)
-        # Allow String -> Char if length is 1
-        if expected == DataType.CHAR and val_type == DataType.STRING and isinstance(value, str) and len(value) == 1:
+        if self._is_string_to_char_coercion(expected, val_type, value):
             return value
         raise TypeError(
             f"Array element type mismatch: expected {expected.name}, got {val_type.name}"
