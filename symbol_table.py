@@ -110,11 +110,17 @@ class Cell:
             raise IndexError(
                 f"Incorrect number of indices: expected {len(bounds.dims)}, got {len(indices)}"
             )
-        for i, (idx, (lower, upper)) in enumerate(zip(indices, bounds.dims)):
-            if idx < lower or idx > upper:
-                raise IndexError(
-                    f"Array index {idx} out of bounds [{lower}:{upper}] for dimension {i+1}"
-                )
+        for i, (idx, dim) in enumerate(zip(indices, bounds.dims)):
+            self._check_index_in_bounds(idx, dim, i)
+
+    @staticmethod
+    def _check_index_in_bounds(idx: int, dim: tuple, dim_index: int):
+        """Raise IndexError if idx falls outside the given (lower, upper) bounds."""
+        lower, upper = dim
+        if idx < lower or idx > upper:
+            raise IndexError(
+                f"Array index {idx} out of bounds [{lower}:{upper}] for dimension {dim_index+1}"
+            )
 
     def _coerce_element_type(self, value: Any, val_type: DataType) -> Any:
         """Check element type compatibility and apply INT→REAL promotion."""
@@ -165,6 +171,16 @@ class DeclarationSpec:
     is_array: bool = False
     array_bounds: Optional[ArrayBounds] = None
     initial_value: Any = None
+    line: int = 0
+
+
+@dataclass
+class ParameterSpec:
+    """Encapsulates all parameters for a parameter declaration."""
+    name: str
+    dtype: DataType
+    param_mode: str
+    caller_cell: Optional[Cell] = None
     line: int = 0
 
 
@@ -220,19 +236,8 @@ class SymbolTable:
         self.scope_level -= 1
     
 
-    def declare(self, name: str, dtype: DataType,
-                is_constant: bool = False,
-                constant_value: Any = None,
-                is_array: bool = False,
-                array_bounds: Optional[ArrayBounds] = None,
-                initial_value: Any = None,
-                line: int = 0) -> Cell:
+    def declare(self, spec: DeclarationSpec) -> Cell:
         """Declare a variable, constant, or array in the current scope."""
-        spec = DeclarationSpec(
-            name=name, dtype=dtype, is_constant=is_constant,
-            constant_value=constant_value, is_array=is_array,
-            array_bounds=array_bounds, initial_value=initial_value, line=line
-        )
         return self._declare_from_spec(spec)
 
     def _declare_from_spec(self, spec: DeclarationSpec) -> Cell:
@@ -302,27 +307,24 @@ class SymbolTable:
             raise NameError(f"Variable '{name}' not declared")
         return sym.cell
     
-    def declare_parameter(self, name: str, dtype: DataType,
-                         param_mode: str,
-                         caller_cell: Optional[Cell] = None,
-                         line: int = 0) -> Cell:
+    def declare_parameter(self, spec: ParameterSpec) -> Cell:
         """Parameter declaration with BYREF (shared Cell) or BYVAL (copied Cell)."""
         current_scope = self.scopes[self.scope_level]
-        if name in current_scope:
-            raise NameError(f"Parameter '{name}' already declared")
-        cell = self._create_param_cell(dtype, param_mode, caller_cell)
+        if spec.name in current_scope:
+            raise NameError(f"Parameter '{spec.name}' already declared")
+        cell = self._create_param_cell(spec.dtype, spec.param_mode, spec.caller_cell)
         sym = SymbolInfo(
-            name=name, cell=cell,
+            name=spec.name, cell=cell,
             scope_level=self.scope_level,
-            is_parameter=True, param_mode=param_mode,
-            declared_line=line
+            is_parameter=True, param_mode=spec.param_mode,
+            declared_line=spec.line
         )
-        current_scope[name] = sym
+        current_scope[spec.name] = sym
 
         # Update lookup cache
-        if name not in self._lookup_cache:
-            self._lookup_cache[name] = []
-        self._lookup_cache[name].append(sym)
+        if spec.name not in self._lookup_cache:
+            self._lookup_cache[spec.name] = []
+        self._lookup_cache[spec.name].append(sym)
 
         return cell
 

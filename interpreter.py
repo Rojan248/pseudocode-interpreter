@@ -10,7 +10,7 @@ import os
 import pickle
 from typing import Any, List, Union
 from ast_nodes import *
-from symbol_table import SymbolTable, Cell, DataType, ArrayBounds, SymbolInfo
+from symbol_table import SymbolTable, Cell, DataType, ArrayBounds, SymbolInfo, DeclarationSpec, ParameterSpec
 from builtins_handler import BUILTIN_NAMES, call_builtin
 from file_handler import execute_file_operation, InterpreterFileError
 
@@ -131,14 +131,18 @@ class Interpreter:
         if not stmt.array_bounds:
             raise InterpreterError("Array declaration missing bounds")
         bounds = ArrayBounds(stmt.array_bounds, dtype)
-        self.symbol_table.declare(stmt.name, DataType.ARRAY, is_array=True, array_bounds=bounds)
+        self.symbol_table.declare(DeclarationSpec(
+            name=stmt.name, dtype=DataType.ARRAY, is_array=True, array_bounds=bounds
+        ))
 
     def _declare_variable(self, stmt, dtype):
         initial_val = None
         if dtype == DataType.UNKNOWN and stmt.type_name in self.user_types:
             initial_val = self._init_record_instance(stmt.type_name)
             dtype = DataType.RECORD
-        self.symbol_table.declare(stmt.name, dtype, initial_value=initial_val)
+        self.symbol_table.declare(DeclarationSpec(
+            name=stmt.name, dtype=dtype, initial_value=initial_val
+        ))
 
     def _init_record_instance(self, type_name):
         """Create a fresh record instance from a user-defined TYPE."""
@@ -153,7 +157,9 @@ class Interpreter:
     def visit_ConstantDecl(self, stmt: ConstantDecl):
         value = self.evaluate(stmt.value)
         dtype = self._infer_type(value)
-        self.symbol_table.declare(stmt.name, dtype, is_constant=True, constant_value=value)
+        self.symbol_table.declare(DeclarationSpec(
+            name=stmt.name, dtype=dtype, is_constant=True, constant_value=value
+        ))
 
     def visit_AssignStmt(self, stmt: AssignStmt):
         value = self.evaluate(stmt.value)
@@ -387,12 +393,16 @@ class Interpreter:
         for arg in evaluated_args:
             dtype = self.symbol_table.resolve_type(arg['type'])
             if arg['mode'] == 'BYREF':
-                self.symbol_table.declare_parameter(arg['name'], dtype, "BYREF",
-                                                    caller_cell=arg['cell'])
+                self.symbol_table.declare_parameter(ParameterSpec(
+                    name=arg['name'], dtype=dtype, param_mode="BYREF",
+                    caller_cell=arg['cell']
+                ))
             else:
                 temp_cell = Cell(arg['value'], dtype)
-                self.symbol_table.declare_parameter(arg['name'], dtype, "BYVAL",
-                                                    caller_cell=temp_cell)
+                self.symbol_table.declare_parameter(ParameterSpec(
+                    name=arg['name'], dtype=dtype, param_mode="BYVAL",
+                    caller_cell=temp_cell
+                ))
 
     # ── Type Declarations ──
 
@@ -406,8 +416,10 @@ class Interpreter:
         """Handle: TYPE Season = (Spring, Summer, Autumn, Winter)"""
         self.user_types[stmt.name] = {'__enum__': True, 'values': stmt.enum_values}
         for i, val_name in enumerate(stmt.enum_values):
-            self.symbol_table.declare(val_name, DataType.INTEGER,
-                                     is_constant=True, constant_value=i)
+            self.symbol_table.declare(DeclarationSpec(
+                name=val_name, dtype=DataType.INTEGER,
+                is_constant=True, constant_value=i
+            ))
 
     # ── Class Handling ──
 
@@ -477,8 +489,10 @@ class Interpreter:
                 val = self.evaluate(arg_exprs[i])
                 dtype = self.symbol_table.resolve_type(param.type_name)
                 temp_cell = Cell(val, dtype)
-                self.symbol_table.declare_parameter(param.name, dtype,
-                                                    param.mode, caller_cell=temp_cell)
+                self.symbol_table.declare_parameter(ParameterSpec(
+                    name=param.name, dtype=dtype,
+                    param_mode=param.mode, caller_cell=temp_cell
+                ))
             for s in method_decl.body:
                 self.execute(s)
         except ReturnException as e:
