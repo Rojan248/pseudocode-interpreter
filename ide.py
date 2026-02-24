@@ -236,11 +236,12 @@ class CodeEditor(tk.Text):
     def _apply_keyword_tags(self, code):
         """Apply keyword/builtin tags, skipping positions inside literals."""
         for tag, words in self._WORD_GROUPS:
-            for w in words:
-                for m in re.finditer(rf'\b{w}\b', code):
-                    pos = f"1.0+{m.start()}c"
-                    if not self._is_inside_literal(pos):
-                        self.tag_add(tag, pos, f"1.0+{m.end()}c")
+            # Combine words into a single regex pattern to reduce loop depth
+            pattern = rf"\b({'|'.join(re.escape(w) for w in words)})\b"
+            for m in re.finditer(pattern, code):
+                pos = f"1.0+{m.start()}c"
+                if not self._is_inside_literal(pos):
+                    self.tag_add(tag, pos, f"1.0+{m.end()}c")
 
     def _is_inside_literal(self, pos):
         """Return True if the given text position is inside a string, comment, or char literal."""
@@ -278,6 +279,230 @@ class OutputPanel(tk.Text):
         self.delete("1.0", "end")
         self.configure(state="disabled")
 
+
+# ═══════════════════════════════════════════════════════
+#  Helper Managers
+# ═══════════════════════════════════════════════════════
+
+class IDEFileManager:
+    """Handles file operations (new, open, save) for the IDE."""
+    def __init__(self, ide):
+        self.ide = ide
+        self.current_file = None
+
+    def new_file(self):
+        self.ide.editor.delete("1.0", "end")
+        self.current_file = None
+        self.ide._update_tab()
+        self.ide._set_status("New file")
+        self.ide.editor.edit_modified(False)
+
+    def open_file(self):
+        path = filedialog.askopenfilename(
+            title="Open Pseudocode File",
+            filetypes=[("Pseudocode", "*.pse *.pseudo *.txt"), ("All files", "*.*")],
+        )
+        if path:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+            self.ide.editor.delete("1.0", "end")
+            self.ide.editor.insert("1.0", content)
+            self.current_file = path
+            self.ide._update_tab()
+            self.ide._set_status(f"Opened {os.path.basename(path)}")
+            self.ide.editor.edit_modified(False)
+            self.ide.editor.highlight_syntax()
+            self.ide.editor._highlight_current_line()
+
+    def save_file(self):
+        if self.current_file:
+            self.write_file(self.current_file)
+        else:
+            self.save_as()
+
+    def save_as(self):
+        path = filedialog.asksaveasfilename(
+            title="Save Pseudocode File", defaultextension=".pse",
+            filetypes=[("Pseudocode", "*.pse"), ("Text", "*.txt"), ("All files", "*.*")],
+        )
+        if path:
+            self.write_file(path)
+            self.current_file = path
+            self.ide._update_tab()
+
+    def write_file(self, path):
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(self.ide.editor.get("1.0", "end-1c"))
+            self.ide._set_status(f"Saved {os.path.basename(path)}", COLORS["success"])
+            self.ide.editor.edit_modified(False)
+        except Exception as e:
+            self.ide._show_error("File Error", f"Cannot save file: {e}")
+
+class IDEExecutionEngine:
+    """Handles execution of pseudocode (Normal Run and Dry Run)."""
+    def __init__(self, ide):
+        self.ide = ide
+        self.is_running = False
+        self.run_thread = None
+
+    def run_code(self):
+        if self.is_running:
+            return
+        source = self.ide.editor.get("1.0", "end-1c")
+        if not source.strip():
+            return
+        self.ide.output.clear()
+        self.ide.editor.tag_remove("error_line", "1.0", "end")
+        self.is_running = True
+        self.ide.run_btn.configure(fg_color=COLORS["overlay"])
+        self.ide._set_status("Running...", COLORS["warning"])
+        self.run_thread = threading.Thread(target=self._execute, args=(source,), daemon=True)
+        self.run_thread.start()
+        self._check_thread()
+
+    def dry_run(self):
+        """Launch A-Level exam-style dry run: setup → execute → trace table."""
+        if self.is_running:
+            return
+        source = self.ide.editor.get("1.0", "end-1c")
+        if not source.strip():
+            return
+
+        filename = self.ide.file_manager.current_file or "<editor>"
+        try:
+            lexer = Lexer(source, filename)
+            tokens = lexer.tokenize()
+            parser = Parser(tokens)
+            statements = parser.parse()
+        except Exception as e:
+            self.ide._show_error("Error", f"Cannot dry-run: {e}")
+            return
+
+        input_info = DryRunInterpreter.scan_inputs(statements)
+        declare_info = DryRunInterpreter.scan_declares(statements)
+
+        dlg = DryRunSetupDialog(self.ide.root, input_info, declare_info)
+        if dlg.result is None:
+            return
+
+        setup = dlg.result
+        self.ide.output.clear()
+        self.ide.editor.tag_remove("error_line", "1.0", "end")
+        self.is_running = True
+        self.ide.dryrun_btn.configure(fg_color=COLORS["overlay"])
+        self.ide._set_status("Dry-running...", COLORS["warning"])
+
+        self.run_thread = threading.Thread(
+            target=self._execute_dryrun,
+            args=(statements, setup), daemon=True,
+        )
+        self.run_thread.start()
+        self._check_dryrun_thread()
+
+    def _execute(self, source):
+        tokens = self._lex(source)
+        if tokens is None:
+            return
+        statements = self._parse(tokens)
+        if statements is None:
+            return
+
+        symbol_table = SymbolTable()
+        interpreter = Interpreter(symbol_table)
+
+        import builtins
+        original_input = builtins.input
+
+        def gui_input(prompt=""):
+            result = [None]
+            event = threading.Event()
+            def show_dialog():
+                dlg = InputDialog(self.ide.root, prompt)
+                result[0] = dlg.result
+                event.set()
+            self.ide.root.after(0, show_dialog)
+            event.wait()
+            if result[0] is None:
+                raise InterpreterError("Input cancelled by user")
+            self.ide.output.after(0, self.ide.output.append, f"{prompt}{result[0]}\n", "input_prompt")
+            return result[0]
+
+        builtins.input = gui_input
+        old_stdout = sys.stdout
+        sys.stdout = RedirectOutput(self.ide.output)
+
+        try:
+            interpreter.interpret(statements)
+            self.ide._show_success()
+        except InterpreterError as e:
+            self.ide._show_error("Runtime Error", f"Line {interpreter.current_line}: {e}",
+                             interpreter.current_line)
+        except Exception as e:
+            self.ide._show_error("Runtime Error", f"Line {interpreter.current_line}: {e}",
+                             interpreter.current_line)
+        finally:
+            sys.stdout = old_stdout
+            builtins.input = original_input
+
+    def _execute_dryrun(self, statements, setup):
+        symbol_table = SymbolTable()
+        interpreter = DryRunInterpreter(
+            symbol_table,
+            input_queue=setup['inputs'],
+            traced_vars=setup['traced_vars'],
+            trace_columns=setup.get('trace_columns'),
+        )
+
+        old_stdout = sys.stdout
+        sys.stdout = RedirectOutput(self.ide.output)
+
+        try:
+            interpreter.interpret(statements)
+            self.ide._show_dryrun_success(interpreter)
+        except (InterpreterError, Exception) as e:
+            self.ide._show_error("Runtime Error",
+                             f"Line {interpreter.current_line}: {e}",
+                             interpreter.current_line)
+            if interpreter.trace:
+                self.ide._open_trace_window(interpreter)
+        finally:
+            sys.stdout = old_stdout
+
+    def _check_thread(self):
+        if self.run_thread and self.run_thread.is_alive():
+            self.ide.root.after(100, self._check_thread)
+        else:
+            self.is_running = False
+            self.ide.run_btn.configure(fg_color=COLORS["green"])
+
+    def _check_dryrun_thread(self):
+        if self.run_thread and self.run_thread.is_alive():
+            self.ide.root.after(100, self._check_dryrun_thread)
+        else:
+            self.is_running = False
+            self.ide.dryrun_btn.configure(fg_color=COLORS["yellow"])
+
+    def _lex(self, source):
+        """Tokenize source code, returning tokens or None on error."""
+        filename = self.ide.file_manager.current_file or "<editor>"
+        try:
+            return Lexer(source, filename).tokenize()
+        except LexerError as e:
+            self.ide._show_error("Lexer Error", str(e))
+        except Exception as e:
+            self.ide._show_error("Lexer Error", str(e))
+        return None
+
+    def _parse(self, tokens):
+        """Parse tokens into statements, returning statements or None on error."""
+        try:
+            return Parser(tokens).parse()
+        except ParserError as e:
+            self.ide._show_error("Parser Error", str(e))
+        except Exception as e:
+            self.ide._show_error("Parser Error", str(e))
+        return None
 
 # ═══════════════════════════════════════════════════════
 #  Dialogs  (CTkToplevel → dark title-bar on Windows)
@@ -838,9 +1063,10 @@ class PseudocodeIDE:
         self.root.configure(fg_color=COLORS["bg_tertiary"])
         self.root.geometry("1100x750")
         self.root.minsize(800, 500)
-        self.current_file = None
-        self.is_running = False
-        self.run_thread = None
+        
+        # Extracted Managers
+        self.file_manager = IDEFileManager(self)
+        self.execution_engine = IDEExecutionEngine(self)
 
         self._build_ui()
         self._bind_shortcuts()
@@ -1040,7 +1266,8 @@ class PseudocodeIDE:
         self.line_numbers.redraw()
 
     def _on_editor_change(self, _event=None):
-        self.line_numbers.redraw()
+        self.file_manager.ide.editor.edit_modified(True)
+        self._update_tab()
         pos = self.editor.index("insert")
         line, col = pos.split(".")
         self.status_pos.configure(text=f"Ln {line}, Col {int(col)+1}")
@@ -1099,9 +1326,10 @@ class PseudocodeIDE:
         self.root.after(50, self.line_numbers.redraw)
 
     def _update_tab(self):
-        name = os.path.basename(self.current_file) if self.current_file else "untitled.pse"
-        self.tab_label.configure(text=f"  {name}  ")
-        self.root.title(f"{name} — 9618 Pseudocode IDE")
+        title = "9618 Pseudocode IDE"
+        if self.file_manager.current_file:
+            title = f"{os.path.basename(self.file_manager.current_file)} - {title}"
+        self.root.title(title)
 
     def _set_status(self, msg, color=None):
         self.status_msg.configure(text=msg, text_color=color or COLORS["subtext"])
@@ -1109,50 +1337,16 @@ class PseudocodeIDE:
     # ═══════ File Operations ═══════
 
     def new_file(self):
-        self.editor.delete("1.0", "end")
-        self.current_file = None
-        self._update_tab()
-        self._set_status("New file")
-        self.editor.edit_modified(False)
+        self.file_manager.new_file()
 
     def open_file(self):
-        path = filedialog.askopenfilename(
-            title="Open Pseudocode File",
-            filetypes=[("Pseudocode", "*.pse *.pseudo *.txt"), ("All files", "*.*")],
-        )
-        if path:
-            with open(path, "r", encoding="utf-8") as f:
-                content = f.read()
-            self.editor.delete("1.0", "end")
-            self.editor.insert("1.0", content)
-            self.current_file = path
-            self._update_tab()
-            self._set_status(f"Opened {os.path.basename(path)}")
-            self.editor.edit_modified(False)
-            self.editor.highlight_syntax()
-            self.editor._highlight_current_line()
+        self.file_manager.open_file()
 
     def save_file(self):
-        if self.current_file:
-            self._write_file(self.current_file)
-        else:
-            self.save_as()
+        self.file_manager.save_file()
 
     def save_as(self):
-        path = filedialog.asksaveasfilename(
-            title="Save Pseudocode File", defaultextension=".pse",
-            filetypes=[("Pseudocode", "*.pse"), ("Text", "*.txt"), ("All files", "*.*")],
-        )
-        if path:
-            self._write_file(path)
-            self.current_file = path
-            self._update_tab()
-
-    def _write_file(self, path):
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(self.editor.get("1.0", "end-1c"))
-        self._set_status(f"Saved {os.path.basename(path)}", COLORS["success"])
-        self.editor.edit_modified(False)
+        self.file_manager.save_as()
 
     def clear_output(self):
         self.output.clear()
@@ -1161,164 +1355,10 @@ class PseudocodeIDE:
     # ═══════ Run Code ═══════
 
     def run_code(self):
-        if self.is_running:
-            return
-        source = self.editor.get("1.0", "end-1c")
-        if not source.strip():
-            return
-        self.output.clear()
-        self.editor.tag_remove("error_line", "1.0", "end")
-        self.is_running = True
-        self.run_btn.configure(fg_color=COLORS["overlay"])
-        self._set_status("Running...", COLORS["warning"])
-        self.run_thread = threading.Thread(target=self._execute, args=(source,), daemon=True)
-        self.run_thread.start()
-        self._check_thread()
-
-    def _check_thread(self):
-        if self.run_thread and self.run_thread.is_alive():
-            self.root.after(100, self._check_thread)
-        else:
-            self.is_running = False
-            self.run_btn.configure(fg_color=COLORS["green"])
-
-    def _execute(self, source):
-        tokens = self._lex(source)
-        if tokens is None:
-            return
-        statements = self._parse(tokens)
-        if statements is None:
-            return
-
-        symbol_table = SymbolTable()
-        interpreter = Interpreter(symbol_table)
-
-        import builtins
-        original_input = builtins.input
-
-        def gui_input(prompt=""):
-            result = [None]
-            event = threading.Event()
-            def show_dialog():
-                dlg = InputDialog(self.root, prompt)
-                result[0] = dlg.result
-                event.set()
-            self.root.after(0, show_dialog)
-            event.wait()
-            if result[0] is None:
-                raise InterpreterError("Input cancelled by user")
-            self.output.after(0, self.output.append, f"{prompt}{result[0]}\n", "input_prompt")
-            return result[0]
-
-        builtins.input = gui_input
-        old_stdout = sys.stdout
-        sys.stdout = RedirectOutput(self.output)
-
-        try:
-            interpreter.interpret(statements)
-            self._show_success()
-        except InterpreterError as e:
-            self._show_error("Runtime Error", f"Line {interpreter.current_line}: {e}",
-                             interpreter.current_line)
-        except Exception as e:
-            self._show_error("Runtime Error", f"Line {interpreter.current_line}: {e}",
-                             interpreter.current_line)
-        finally:
-            sys.stdout = old_stdout
-            builtins.input = original_input
-
-    def _lex(self, source):
-        """Tokenize source code, returning tokens or None on error."""
-        filename = self.current_file or "<editor>"
-        try:
-            return Lexer(source, filename).tokenize()
-        except LexerError as e:
-            self._show_error("Lexer Error", str(e))
-        except Exception as e:
-            self._show_error("Lexer Error", str(e))
-        return None
-
-    def _parse(self, tokens):
-        """Parse tokens into statements, returning statements or None on error."""
-        try:
-            return Parser(tokens).parse()
-        except ParserError as e:
-            self._show_error("Parser Error", str(e))
-        except Exception as e:
-            self._show_error("Parser Error", str(e))
-        return None
-
-    # ═══════ Dry Run ═══════
+        self.execution_engine.run_code()
 
     def dry_run(self):
-        """Launch A-Level exam-style dry run: setup → execute → trace table."""
-        if self.is_running:
-            return
-        source = self.editor.get("1.0", "end-1c")
-        if not source.strip():
-            return
-
-        filename = self.current_file or "<editor>"
-        try:
-            lexer = Lexer(source, filename)
-            tokens = lexer.tokenize()
-            parser = Parser(tokens)
-            statements = parser.parse()
-        except Exception as e:
-            self._show_error("Error", f"Cannot dry-run: {e}")
-            return
-
-        input_info = DryRunInterpreter.scan_inputs(statements)
-        declare_info = DryRunInterpreter.scan_declares(statements)
-
-        dlg = DryRunSetupDialog(self.root, input_info, declare_info)
-        if dlg.result is None:
-            return
-
-        setup = dlg.result
-        self.output.clear()
-        self.editor.tag_remove("error_line", "1.0", "end")
-        self.is_running = True
-        self.dryrun_btn.configure(fg_color=COLORS["overlay"])
-        self._set_status("Dry-running...", COLORS["warning"])
-
-        self.run_thread = threading.Thread(
-            target=self._execute_dryrun,
-            args=(statements, setup), daemon=True,
-        )
-        self.run_thread.start()
-        self._check_dryrun_thread()
-
-    def _check_dryrun_thread(self):
-        if self.run_thread and self.run_thread.is_alive():
-            self.root.after(100, self._check_dryrun_thread)
-        else:
-            self.is_running = False
-            self.dryrun_btn.configure(fg_color=COLORS["yellow"])
-
-    def _execute_dryrun(self, statements, setup):
-        symbol_table = SymbolTable()
-        interpreter = DryRunInterpreter(
-            symbol_table,
-            input_queue=setup['inputs'],
-            traced_vars=setup['traced_vars'],
-            trace_columns=setup.get('trace_columns'),
-        )
-
-        old_stdout = sys.stdout
-        sys.stdout = RedirectOutput(self.output)
-
-        try:
-            interpreter.interpret(statements)
-            self._show_dryrun_success(interpreter)
-        except (InterpreterError, Exception) as e:
-            self._show_error("Runtime Error",
-                             f"Line {interpreter.current_line}: {e}",
-                             interpreter.current_line)
-            if interpreter.trace:
-                self._open_trace_window(interpreter)
-        finally:
-            sys.stdout = old_stdout
+        self.execution_engine.dry_run()
 
     def _show_dryrun_success(self, interpreter):
         def _update():
