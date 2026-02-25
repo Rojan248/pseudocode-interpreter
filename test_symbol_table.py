@@ -99,5 +99,37 @@ class TestSymbolTable(unittest.TestCase):
         self.assertEqual(found_outer.cell.value, 1)
         self.assertEqual(found_outer.cell.type, DataType.INTEGER)
 
+    def test_copy_value_immutable(self):
+        """Test that copy_value correctly copies immutable types."""
+        # Integer
+        c1 = Cell(42, DataType.INTEGER)
+        c2 = c1.copy_value()
+        self.assertEqual(c2.value, 42)
+        self.assertEqual(c2.type, DataType.INTEGER)
+
+        # String
+        c1 = Cell("hello", DataType.STRING)
+        c2 = c1.copy_value()
+        self.assertEqual(c2.value, "hello")
+
+        # Boolean
+        c1 = Cell(True, DataType.BOOLEAN)
+        c2 = c1.copy_value()
+        self.assertEqual(c2.value, True)
+
+    def test_copy_value_mutable_array(self):
+        """Test that arrays are deep copied."""
+        bounds = ArrayBounds(dims=[(1, 2)], element_type=DataType.INTEGER)
+        c1 = Cell(None, DataType.ARRAY, is_array=True, array_bounds=bounds)
+        c1.set_array_element([1], 10, DataType.INTEGER)
+
+        c2 = c1.copy_value()
+        self.assertEqual(c2.get_array_element([1]).value, 10)
+
+        # Modify c2, c1 should not change
+        c2.set_array_element([1], 20, DataType.INTEGER)
+        self.assertEqual(c1.get_array_element([1]).value, 10)
+        self.assertEqual(c2.get_array_element([1]).value, 20)
+
 if __name__ == '__main__':
     unittest.main()

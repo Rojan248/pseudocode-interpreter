@@ -159,6 +159,10 @@ class Cell:
                 array_elements=new_elements
             )
         
+        # Optimization: Don't deepcopy immutable primitive types for performance
+        if self.type in (DataType.INTEGER, DataType.REAL, DataType.STRING, DataType.BOOLEAN, DataType.CHAR, DataType.UNKNOWN):
+            return Cell(self.value, self.type, is_constant=False)
+
         return Cell(deepcopy(self.value), self.type, is_constant=False)
 
 @dataclass
