@@ -300,16 +300,18 @@ class Interpreter:
             raise InterpreterError("FOR loop STEP cannot be zero")
         loop_type = self._infer_type(start)
         self.symbol_table.assign(var, start, loop_type)
+        # Optimization: Cache the cell for the loop variable to avoid repeated lookups
+        var_cell = self.symbol_table.get_cell(var)
         while True:
-            curr = self.symbol_table.get_cell(var).get()
+            curr = var_cell.get()
             if step > 0 and curr > end:
                 break
             if step < 0 and curr < end:
                 break
             for s in stmt.body:
                 self.execute(s)
-            curr = self.symbol_table.get_cell(var).get()
-            self.symbol_table.assign(var, curr + step, loop_type)
+            curr = var_cell.get()
+            var_cell.set(curr + step, loop_type)
 
     # ── Procedure / Function Handling ──
 
